@@ -64,6 +64,82 @@ class SensorHandler(BaseHandler):
         self._sensor = self._world.spawn_unmanaged_actor(self._transform, self._blueprint, attach_to=ego)
         self._sensor.listen(self._update_data)
 
+from typing import Dict, Tuple
+import numpy as np
+from gym import spaces
+
+from ...carla_manager import WorldManager
+from .base_handler import BaseHandler
+
+from typing import Dict, Tuple
+import numpy as np
+from gym import spaces
+from ...carla_manager import WorldManager
+from .base_handler import BaseHandler
+
+class DomainIDHandler(BaseHandler):
+    def __init__(self, world: WorldManager, config):
+        super().__init__(world, config)
+        self._num_domains = int(getattr(config, "num_domains", 16))
+        self._default_id  = int(getattr(config, "value", 0))
+        self._mapping     = getattr(config, "mapping", None)
+        self._domain_id   = self._default_id
+
+        # Important: scalar output so Dreamer sees (B,T), not (B,T,1)
+        self._shape = ()  # scalar
+
+    def get_observation_space(self) -> Dict:
+        return {
+            self._config.key: spaces.Box(
+                low=0.0,
+                high=float(self._num_domains - 1),
+                shape=self._shape,            # ()
+                dtype=np.float32,
+            )
+        }
+
+    def get_observation(self, env_state: Dict) -> Tuple[Dict, Dict]:
+        # scalar float32
+        return {self._config.key: np.float32(self._domain_id)}, {}
+
+    def reset(self, ego) -> None:
+        self._domain_id = self._compute_domain_id()
+
+    def destroy(self) -> None:
+        pass
+
+    def _compute_domain_id(self) -> int:
+        dom = self._default_id
+        if self._mapping is not None:
+            # Try to infer Town key.
+            town = None
+            try:
+                town = getattr(self._world, "town", None)
+            except Exception:
+                pass
+
+            map_name = None
+            try:
+                world_obj = getattr(self._world, "world", None)
+                if world_obj is not None:
+                    map_name = world_obj.get_map().name  # e.g. "Carla/Maps/Town07"
+            except Exception:
+                pass
+
+            key = None
+            if town is not None:
+                key = str(town)
+            elif map_name is not None:
+                key = str(map_name).split("/")[-1]
+
+            if key is not None and key in self._mapping:
+                dom = int(self._mapping[key])
+
+        return int(np.clip(dom, 0, self._num_domains - 1))
+
+
+
+
 
 class CameraHandler(SensorHandler):
     def _get_observation_space(self) -> spaces.Space:

@@ -1,6 +1,6 @@
 from enum import Enum
 
-from .handlers import BirdeyeHandler, CameraHandler, CollisionHandler, LidarHandler, MessageHandler, SpectatorHandler, SemanticSegmentationHandler, LaneInvasionHandler
+from .handlers import BirdeyeHandler, CameraHandler, CollisionHandler, LidarHandler, MessageHandler, SpectatorHandler, SemanticSegmentationHandler, LaneInvasionHandler, DomainIDHandler
 
 
 class HandlerType(Enum):
@@ -14,6 +14,7 @@ class HandlerType(Enum):
     SPECTATOR = "spectator"
     SEMANTIC_SEGMENTATION = "semantic_segmentation"
     LANE_INVASION = "lane_invasion"
+    DOMAIN_ID = "domain_id"
 
 
 HANDLER_DICT = {
@@ -25,4 +26,5 @@ HANDLER_DICT = {
     HandlerType.SPECTATOR: SpectatorHandler,
     HandlerType.SEMANTIC_SEGMENTATION: SemanticSegmentationHandler,
     HandlerType.LANE_INVASION: LaneInvasionHandler,
+    HandlerType.DOMAIN_ID: DomainIDHandler,
 }

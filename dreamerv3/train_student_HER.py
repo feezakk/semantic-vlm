@@ -232,7 +232,9 @@ def main(argv=None):
     wm_subtree_norm(teacher_vars, "agent/wm/")
     wm_subtree_norm(student_vars, "agent/teacher_wm/")
 
-    replay = embodied.replay.Uniform(dreamerv3_config.batch_length, dreamerv3_config.replay_size, logdir / "teacher_replay")
+    # replay = embodied.replay.Uniform(dreamerv3_config.batch_length, dreamerv3_config.replay_size, logdir / "teacher_replay")
+
+    replay = shared_replay
 
     def her_goal_reward(ag, dg, infos, goal_radius=2.0, r_goal=200.0, r_collision=150.0, r_lane_inv=20.0, lane_cost_alpha=0.0, lane_cost_cap=1.5, is_first=None):
         # ag, dg: shape [T, 2]

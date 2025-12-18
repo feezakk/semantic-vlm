@@ -9,6 +9,10 @@ defaults:
   eval_dir: ""
   filter: ".*"
 
+  num_domains: 4
+  domain_scale: 2.0
+
+
   enable_bisim: True
 
   jax:
@@ -29,9 +33,9 @@ defaults:
     expl_until: 0
     log_every: 60
     save_every: 10000
-    eval_every: 10000
+    eval_every: 2000
     eval_initial: True
-    eval_eps: 10
+    eval_eps: 25
     eval_samples: 1
     train_ratio: 512
     train_fill: 0
@@ -179,7 +183,10 @@ defaults:
       bisim_imag_reward_mse: 0.5,
       bisim_imag_next_kl: 0.1,
       bisim_imag_next_deter: 0.1,
-      bisim_calib_reg: 1e-4
+      bisim_calib_reg: 1e-4,
+      domain_adv: 1.0,
+      sem_rollout: 0.25,
+      domain_sty: 1.0,
     }
 
   # --- bisimulation target (teacher) ---

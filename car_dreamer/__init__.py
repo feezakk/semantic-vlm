@@ -80,6 +80,7 @@ def _register_envs():
         if file.endswith("env.py") and file != "__init__.py":
             file_name = file[:-3]
             class_name = toClassName(file_name)
+            # print(f"Registering env: {class_name}-v0")
             exec(f"register(id='{class_name}-v0', entry_point='car_dreamer.{file_name}:{class_name}')")
 
 

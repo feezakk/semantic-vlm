@@ -44,7 +44,7 @@ class Chunk:
             np.savez_compressed(stream, **data)
             stream.seek(0)
             filename.write(stream.read(), mode="wb")
-        print(f"Saved chunk: {filename.name}")
+        # print(f"Saved chunk: {filename.name}")
 
     @classmethod
     def load(cls, filename):

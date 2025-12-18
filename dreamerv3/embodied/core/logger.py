@@ -97,11 +97,14 @@ class TerminalOutput:
         formatted = {k: self._format_value(v) for k, v in scalars.items()}
         if self._console:
             if self._name:
-                self._console.rule(f"[green bold]{self._name} (Step {step})")
+                # self._console.rule(f"[green bold]{self._name} (Step {step})")
+                pass
             else:
-                self._console.rule(f"[green bold]Step {step}")
+                pass
+                # self._console.rule(f"[green bold]Step {step}")
             # self._console.print(" [blue]/[/blue] ".join(f"{k} {v}" for k, v in formatted.items()))
-            print("")
+            # print("")
+            pass
         else:
             message = " / ".join(f"{k} {v}" for k, v in formatted.items())
             message = f"[{step}] {message}"

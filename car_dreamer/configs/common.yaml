@@ -44,6 +44,12 @@ env:
       blueprint: sensor.other.lane_invasion
       key: lane_invasion
       shape: [1]
+    
+    domain_id:
+      handler: domain_id
+      key: domain_id
+      num_domains: 16
+      value: 0
 
     # LiDAR sensor
     lidar:
