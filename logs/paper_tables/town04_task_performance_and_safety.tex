@@ -1,0 +1,20 @@
+\begin{table}
+\caption{Town04 evaluation: task performance and safety (macro mean ± std over evaluation seeds; 64 episodes).}
+\label{tab:town04_task_performance}
+\begin{tabular}{lcccc}
+\toprule
+Method & Distance [km] & Success↑ & Coll./km↓ & Lane inv./km↓ \\
+\midrule
+sem_plus_adv_aux & 6.6201 ± 0.0853 & 85.6250 ± 1.3073 & 0.0000 ± 0.0000 & 109.6860 ± 7.4652 \\
+dreamer_aug & 6.3543 ± 0.0596 & 80.0000 ± 2.0373 & 0.0000 ± 0.0000 & 105.7210 ± 12.2684 \\
+dreamer_dann & 6.6027 ± 0.1077 & 82.5000 ± 2.5674 & 0.0000 ± 0.0000 & 108.3240 ± 7.0857 \\
+sem_rollout_aux & 5.3022 ± 0.0526 & 53.4375 ± 2.5674 & 0.1130 ± 0.1032 & 97.7523 ± 6.4002 \\
+semsty_noloss & 6.1891 ± 0.1174 & 54.6875 ± 2.2097 & 1.5500 ± 0.3855 & 114.8551 ± 4.3764 \\
+full_aux & 4.8544 ± 0.1311 & 56.8750 ± 1.7815 & 0.0000 ± 0.0000 & 133.6494 ± 9.1355 \\
+dreamer_std & 5.1259 ± 0.1176 & 33.4375 ± 0.8558 & 0.0000 ± 0.0000 & 87.7548 ± 4.2342 \\
+domain_adv_small_grl & 5.2235 ± 0.0832 & 49.0625 ± 2.0963 & 0.0000 ± 0.0000 & 106.5505 ± 5.7883 \\
+domain_adv_large_grl & 5.9948 ± 0.1393 & 53.7500 ± 3.4233 & 0.6980 ± 0.2106 & 104.1081 ± 4.6246 \\
+policy_sem_noloss & 4.8511 ± 0.0579 & 38.7500 ± 2.5674 & 0.0000 ± 0.0000 & 115.4828 ± 5.5420 \\
+\bottomrule
+\end{tabular}
+\end{table}
