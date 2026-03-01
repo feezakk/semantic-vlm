@@ -50,12 +50,17 @@ def main(argv=None):
         print("Using task: ", name)
         eval_name = name + "_test"
         print("Using eval task: ", eval_name)
+        print("1**********************")
 
         env, env_config = car_dreamer.create_task(name, argv)
+        print("2**********************")
         eval_env,    eval_env_config = car_dreamer.create_task(eval_name, argv)
+        print("3**********************")
 
         config = config.update(env_config)
+        print("4**********************")
         eval_config = config.update(eval_env_config)
+        print("5**********************")
 
     config = embodied.Flags(config).parse(other)
     eval_config = embodied.Flags(eval_config).parse(other)
@@ -158,7 +163,53 @@ def main(argv=None):
         copied += 1
 
     print(f"[WM copy] Copied {copied} tensors, missing={missing}, shape_mismatch={shape_mismatch}")
+
+    # -------------------- NEW: copy teacher ACTOR -> student teacher_actor --------------------
+    copied_actor = 0
+    missing_actor = 0
+    shape_mismatch_actor = 0
+
+    for k, v in teacher_vars.items():
+        # Teacher actor params live here (verify by printing keys if needed)
+        if not k.startswith("agent/task_behavior/ac/actor/"):
+            continue
+
+        k_student = k.replace("agent/task_behavior/ac/actor/", "agent/task_behavior/ac/teacher_actor/")
+
+        if k_student not in student_vars:
+            print("[MISSING IN STUDENT]", k_student)
+            missing_actor += 1
+            continue
+
+        if student_vars[k_student].shape != v.shape:
+            print("[SHAPE MISMATCH]", k_student,
+                "student", student_vars[k_student].shape,
+                "teacher", v.shape)
+            shape_mismatch_actor += 1
+            continue
+
+        student_vars[k_student] = v
+        copied_actor += 1
+
+    print(f"[Actor copy] Copied {copied_actor} tensors, missing={missing_actor}, shape_mismatch={shape_mismatch_actor}")
+    # -----------------------------------------------------------------------------------------
+
+
+
     agent.load(student_vars)
+
+    def subtree_norm(vars_dict, prefix):
+        arrs = [v for k, v in vars_dict.items() if k.startswith(prefix)]
+        if not arrs:
+            print(prefix, "NO PARAMS FOUND")
+            return
+        flat = np.concatenate([np.ravel(np.array(v)) for v in arrs])
+        print(prefix, "L2 =", np.linalg.norm(flat))
+
+    sv = agent.save()
+    subtree_norm(sv, "agent/task_behavior/ac/actor/")
+    subtree_norm(sv, "agent/task_behavior/ac/teacher_actor/")
+
 
     print("***************************************************************")
     print(f"[WM copy] Copied {copied} teacher WM tensors into student WM.")

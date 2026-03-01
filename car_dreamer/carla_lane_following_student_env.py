@@ -88,7 +88,7 @@ class CarlaLaneFollowingStudentEnv(gym.Env):
         self._config = config
 
         # Connect to a running CARLA instance or create a new one
-        self.client = carla.Client("localhost", 3000)
+        self.client = carla.Client("localhost", 2000)
         self.client.set_timeout(300.0)
 
         w = self.client.get_world()

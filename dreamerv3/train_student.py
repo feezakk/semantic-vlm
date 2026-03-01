@@ -32,6 +32,56 @@ def wrap_env(env, config):
             env = embodied.wrappers.ClipAction(env, name)
     return env
 
+import csv
+import numpy as np
+
+class CSVScalarOutput:
+    """
+    Writes metrics in long format:
+      step,name,value
+    This is robust to changing metric keys over time.
+    """
+    def __init__(self, logdir, filename="metrics.csv"):
+        self._path = embodied.Path(logdir) / filename
+        self._file = self._path.open("a")
+        self._writer = csv.writer(self._file)
+        if self._file.tell() == 0:
+            self._writer.writerow(["step", "name", "value"])
+
+    def __call__(self, *args):
+        # Support either output(step, metrics) OR output(metrics)
+        if len(args) == 2:
+            step, metrics = args
+        elif len(args) == 1:
+            (metrics,) = args
+            step = metrics.get("step", None)
+        else:
+            return
+
+        # Convert step to int if possible
+        try:
+            step = int(step)
+        except Exception:
+            try:
+                step = int(getattr(step, "value", 0))
+            except Exception:
+                step = 0
+
+        for k, v in metrics.items():
+            if isinstance(v, dict):
+                continue
+            # Only write scalar-like values
+            try:
+                arr = np.array(v)
+                if arr.shape != ():
+                    continue
+                self._writer.writerow([step, k, float(arr)])
+            except Exception:
+                continue
+
+        self._file.flush()
+
+
 
 def main(argv=None):
     model_configs = yaml.YAML(typ="safe").load((embodied.Path(__file__).parent / "dreamerv3.yaml").read())
@@ -44,11 +94,19 @@ def main(argv=None):
         eval_name = name + "_test"
         print("Using eval task: ", eval_name)
 
+        print("1*******************************")
+
         env, env_config = car_dreamer.create_task(name, argv)
+        print("2*******************************")
         eval_env,    eval_env_config = car_dreamer.create_task(eval_name, argv)
+        print("3*******************************")
 
         config = config.update(env_config)
+        print("4*******************************")
         eval_config = config.update(eval_env_config)
+        print("5*******************************")
+
+    print("*******************************")
 
     config = embodied.Flags(config).parse(other)
     eval_config = embodied.Flags(eval_config).parse(other)
@@ -61,6 +119,7 @@ def main(argv=None):
             embodied.logger.TerminalOutput(),
             embodied.logger.JSONLOutput(logdir, "metrics.jsonl"),
             embodied.logger.TensorBoardOutput(logdir),
+            CSVScalarOutput(logdir, "metrics.csv"),
         ],
     )
 

@@ -48,7 +48,7 @@ env:
     domain_id:
       handler: domain_id
       key: domain_id
-      num_domains: 16
+      num_domains: 4
       value: 0
 
     # LiDAR sensor

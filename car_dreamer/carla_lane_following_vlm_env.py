@@ -34,7 +34,7 @@ TRAIN_EGO_END_POINT = [
     [6.476024,  -241.105026, 1.000000, 2.601381, -192.499680,  0.000000],
 ]
 
-TRAIN_ROUTES = list(zip(TRAIN_EGO_SPAWN_POINT, TRAIN_EGO_END_POINT))
+# TRAIN_ROUTES = list(zip(TRAIN_EGO_SPAWN_POINT, TRAIN_EGO_END_POINT))
 
 
 # ----------------------------
@@ -45,7 +45,7 @@ EVAL_EGO_SPAWN_POINT = [
     [74.51,   7.51,   1.01, 0.953298,   45,   0.0],
     [68.92,  72.00,   1.01, 4.703701, -280,  0.0],
     [-90.68, 121.28,  1.01, 0.0,        0,   0.0],
-    [-203.12, 64.82,  1.01, 0.0,       90,   0.0],
+    # [-203.12, 64.82,  1.01, 0.0,       90,   0.0],
 
     # straight scenarios
     [-15.60, -161.00, 1.00, 0.0,      180,   0.0],
@@ -63,7 +63,7 @@ EVAL_EGO_END_POINT = [
     [75.51,  51.44,  1.01, 0.953298, 140, 0.0],
     [-90.68, 118.28, 1.01, 0.0,      180, 0.0],
     [72.92,  72.00,  1.01, 4.703701, -100,0.0],
-    [-190.41,110.60, 1.00, 0.0,        0, 0.0],
+    # [-190.41,110.60, 1.00, 0.0,        0, 0.0],
 
     # straight scenarios
     [-58.60, -161.00,1.00, 0.0,      180, 0.0],
@@ -76,7 +76,63 @@ EVAL_EGO_END_POINT = [
     # [-63.37,  -95.85,1.00, 0.0,      270, 0.0],
 ]
 
-EVAL_ROUTES = list(zip(EVAL_EGO_SPAWN_POINT, EVAL_EGO_END_POINT))
+# EVAL_ROUTES = list(zip(EVAL_EGO_SPAWN_POINT, EVAL_EGO_END_POINT))
+
+# ----------------------------
+# Town06 (TRAIN routes)
+# ----------------------------
+TOWN06_TRAIN_SPAWN = [
+    [-262.47, -14.12, 1.0, 0, 180, 0],
+    [-215.71, 150.09, 1.0, 0, 160, 0],
+    [548.55, 244.84, 1.0, 0, 0, 0],
+    [659.80, 28.50, 1.0, 0, 250, 0],
+    [-230.09, 139.45, 1.0, 0, 180, 0],
+    [-317.50, 95.52, 1.0, 0, 270, 0],
+    [146.45, 247.71, 1.0, 0, 0, 0],
+    [298.46, -20.31, 1.0, 0, 180, 0],
+]
+
+TOWN06_TRAIN_END = [
+    [-313.80, 243.80, 1.0, 0, 0, 0],
+    [-216.77, 235.38, 1.0, 0, 10, 0],
+    [665.86, 195.78, 1.0, 0, 270, 0],
+    [580.75, -16.72, 1.0, 0, 180, 0],
+    [-317.50, 95.52, 1.0, 0, 270, 0],
+    [-230.76, 49.86, 1.0, 0, 0, 0],
+    [335.78, 247.71, 1.0, 0, 0, 0],
+    [154.26, -20.31, 1.0, 0, 180, 0],
+]
+
+TRAIN_ROUTES = list(zip(TOWN06_TRAIN_SPAWN, TOWN06_TRAIN_END))
+
+
+# ----------------------------
+# Town04 (EVAL routes)
+# ----------------------------
+TOWN04_EVAL_SPAWN = [
+    [-405.62, 10.02, 1.0, 0, 180, 0],
+    [-39.65, -226.78, 1.0, 0, 120, 0],
+    [-220.49, 431.52, 1.0, 0, 0, 0],
+    [268.52, 38.00, 15.0, 0, 0, 0],
+    [255.83, -367.66, 1.0, 0, 0, 0],
+    [10.94, -210.57, 1.0, 0, -90, 0],
+    [-350.19, 33.68, 15.0, 0, 0, 0],
+    [-124.33, 9.56, 15.0, 0, 180, 0],
+]
+
+TOWN04_EVAL_END = [
+    [-338.83, 431.15, 1.0, 0, 0, 0],
+    [-379.22, -19.55, 1.0, 0, 100, 0],
+    [-42.42, 364.21, 1.0, 0, -45, 0],
+    [395.24, 12.82, 15.0, 0, -45, 0],
+    [385.96, -243.17, 1.0, 0, 90, 0],
+    [111.44, -360.14, 1.0, 0, -15, 0],
+    [128.22, 34.38, 15.0, 0, 0, 0],
+    [-340.33, 9.56, 15.0, 0, 180, 0],
+]
+
+EVAL_ROUTES = list(zip(TOWN04_EVAL_SPAWN, TOWN04_EVAL_END))
+
 
 
 # ----------------------------
@@ -134,14 +190,15 @@ WEATHER_TABLE = [
 # DEFAULT_TRAIN_WEATHER_IDS = [0, 1, 2, 4]       # clear/cloudy/wet/soft-rain noon
 # DEFAULT_EVAL_WEATHER_IDS  = [6, 7, 8, 10, 13]  # hard rain + sunset variants
 
-# Train: include both Noon and Sunset for each coarse class
-DEFAULT_TRAIN_WEATHER_IDS = [0, 1, 2, 4, 7, 8, 9, 11]
+# # Train: include both Noon and Sunset for each coarse class
+# DEFAULT_TRAIN_WEATHER_IDS = [0, 7, 1, 8, 2, 9, 4, 11]
+# DEFAULT_EVAL_WEATHER_IDS = [3, 10, 5, 12, 6, 13]
 
-# Eval: hold out different weathers (heavier rain / wetcloudy variants, etc.)
-DEFAULT_EVAL_WEATHER_IDS  = [3, 5, 6, 10, 12, 13]
+# Train: Noon variants (one per domain)
+DEFAULT_TRAIN_WEATHER_IDS = [0, 1, 2, 4]           # clearNoon, cloudyNoon, wetNoon, softRainNoon
 
-
-
+# Eval: Sunset / harder variants (one per domain)
+DEFAULT_EVAL_WEATHER_IDS  = [7, 8, 10, 12, 13]     # clearSunset, cloudySunset, wetCloudySunset, midRainSunset, hardRainSunset
 
 
 class CarlaLaneFollowingVlmEnv(gym.Env):
@@ -168,6 +225,7 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         self._config = config
         self.routes = routes
         self.weather_ids = list(weather_ids)
+
         self.eval_mode = bool(eval_mode)
         self.deterministic_eval = bool(deterministic_eval)
 
@@ -177,16 +235,33 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         self.client = carla.Client(host, port)
         self.client.set_timeout(float(_get_cfg(config, "world.timeout_s", 300.0)))
 
+        # w = self.client.get_world()
+        # try:
+        #     name = w.get_map().name
+        # except RuntimeError:
+        #     name = ""
+        # if name != "Carla/Maps/Town07":
+        #     w = self.client.load_world("Town07")
+
         w = self.client.get_world()
         try:
-            name = w.get_map().name
+            cur_map = w.get_map().name
         except RuntimeError:
-            name = ""
-        if name != "Carla/Maps/Town07":
-            w = self.client.load_world("Town07")
+            cur_map = ""
+
+        target_town = _get_cfg(config, "env.town", _get_cfg(config, "town", "Town07"))
+        target_map = f"Carla/Maps/{target_town}"
+
+        if cur_map != target_map:
+            w = self.client.load_world(target_town)
 
         self.world = w
         self.map = self.world.get_map()
+        print(f"[CARLA] host={host} port={port} map={self.map.name}")
+
+
+        # self.world = w
+        # self.map = self.world.get_map()
 
         # sync settings
         settings = self.world.get_settings()
@@ -225,6 +300,9 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         # rendering
         self.render_enabled = bool(_get_cfg(config, "render", False))
 
+        self.include_vlm = bool(_get_cfg(config, "include_vlm", True))
+        self.include_domain_id = bool(_get_cfg(config, "include_domain_id", True))
+
         # VLM
         self.vlm_dim = int(_get_cfg(config, "vlm_dim", 512))
         self.compute_vlm = bool(_get_cfg(config, "compute_vlm", True))
@@ -236,6 +314,21 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         self.num_domains = int(_get_cfg(config, "num_domains", 4))
 
         self.DOMAIN_NAMES = ("clear", "cloudy", "wet", "rain")
+
+        # Build a mapping domain -> list of weather_ids in that domain
+        self._domain_to_weather = {d: [] for d in range(self.num_domains)}
+        for wid in self.weather_ids:
+            d = int(self._weather_to_domain(wid))
+            self._domain_to_weather[d].append(int(wid))
+
+        # Sanity check: every domain should be present in training, or sampling will be biased.
+        if not self.eval_mode:
+            missing = [d for d, ws in self._domain_to_weather.items() if len(ws) == 0]
+            if missing:
+                raise ValueError(f"Training weather_ids do not cover domains {missing}. "
+                                f"Either add weathers or reduce num_domains.")
+
+
 
         expected = len(self.DOMAIN_NAMES)
         if self.num_domains != expected:
@@ -289,7 +382,6 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         self.last_num_completed = 0
 
         # tracking
-        self.low_speed_start_time = None
         self.speed_kmh = 0.0
 
         # distance/off-centre
@@ -334,28 +426,90 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         self.episode_return = 0.0
         self.episode_length = 0
 
+        self.aug_enable = bool(_get_cfg(config, "augment.enable", False))
+        self.aug_brightness = float(_get_cfg(config, "augment.brightness", 0.0))
+        self.aug_contrast = float(_get_cfg(config, "augment.contrast", 0.0))
+        self.aug_gamma = float(_get_cfg(config, "augment.gamma", 0.0))
+        self.aug_blur_prob = float(_get_cfg(config, "augment.blur_prob", 0.0))
+        self.aug_noise_std = float(_get_cfg(config, "augment.noise_std", 0.0))
+
+        seed = int(_get_cfg(config, "seed", 0))
+        self._rng = np.random.RandomState(seed)
+
+        # self._best_dist_to_goal = float(self.initial_distance_to_goal)
+        self._dist_regret_steps = 0
+
+        # self.include_vlm = bool(_get_cfg(config, "include_vlm", True))
+        # self.include_domain_id = bool(_get_cfg(config, "include_domain_id", True))
+
+        # if not self.include_vlm:
+        #     self.compute_vlm = False  # prevents CLIP loading + encoding
+
+        # ----------------------------
+        # Lane-keeping (multi-lane towns)
+        # ----------------------------
+        # terminate if agent stays in wrong lane / off-road for too long
+        self.max_wrong_lane_steps = int(_get_cfg(config, "max_wrong_lane_steps", 5))
+        self.max_offroad_steps = int(_get_cfg(config, "max_offroad_steps", 2))
+
+        self.wrong_lane_steps = 0
+        self.offroad_steps = 0
+
+        # last-step flags (set every step in _compute_reward)
+        self._wrong_lane = False
+        self._offroad = False
+
     # ----------------------------
     # Domain ID
     # ----------------------------
 
     def _weather_to_domain(self, weather_id: int) -> int:
-        """
-        Map a CARLA weather preset id (index into WEATHER_TABLE) to a small
-        shared domain label in [0..len(DOMAIN_NAMES)-1].
-        """
-        name = WEATHER_TABLE[int(weather_id)][0].lower()  # e.g., "SoftRainNoon" -> "softrainnoon"
+        name = WEATHER_TABLE[int(weather_id)][0].lower()
 
-        # rain/rainy first
-        if "rain" in name:            # matches "rain", "rainy", "softrain", "midrainy", "hardrain"
-            return 3  # rain
-        # wet (but not raining)
-        if "wet" in name:
-            return 2  # wet
-        # cloudy (but not wet/rain)
-        if "cloudy" in name:
-            return 1  # cloudy
-        # otherwise clear
-        return 0      # clear
+        if "rain" in name:
+            return 3   # rain
+        elif "wet" in name:
+            return 2   # wet
+        elif "cloudy" in name:
+            return 1   # cloudy
+        else:
+            return 0   # clear
+
+    
+    # ----------------------------
+    # RGB Augmentation
+    # ----------------------------
+
+    def _augment_rgb(self, rgb):
+        # rgb uint8 HxWx3
+        x = rgb.astype(np.float32) / 255.0
+
+        # brightness/contrast
+        if self.aug_brightness > 0:
+            b = self._rng.uniform(-self.aug_brightness, self.aug_brightness)
+            x = x + b
+        if self.aug_contrast > 0:
+            c = self._rng.uniform(1 - self.aug_contrast, 1 + self.aug_contrast)
+            x = (x - 0.5) * c + 0.5
+
+        # gamma
+        if self.aug_gamma > 0:
+            g = self._rng.uniform(1 - self.aug_gamma, 1 + self.aug_gamma)
+            x = np.clip(x, 0, 1) ** g
+
+        # blur
+        if self.aug_blur_prob > 0 and self._rng.rand() < self.aug_blur_prob:
+            k = int(self._rng.choice([3, 5]))
+            x = cv2.GaussianBlur(x, (k, k), 0)
+
+        # noise
+        if self.aug_noise_std > 0:
+            n = self._rng.normal(0, self.aug_noise_std, size=x.shape).astype(np.float32)
+            x = x + n
+
+        x = np.clip(x, 0, 1)
+        return (x * 255.0).astype(np.uint8)
+
 
     # ----------------------------
     # Rendering
@@ -428,15 +582,38 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         self._route_queue = deque(idxs)
 
     def _refill_combo_queue(self):
-        combos = [(rid, wid) for rid in range(len(self.routes)) for wid in self.weather_ids]
+        """
+        Deterministic eval schedule, but DOMAIN-BALANCED.
+        Each coarse domain contributes equally by upsampling weather_ids within the domain.
+        """
+        dom_to_wids = {d: [] for d in range(self.num_domains)}
+        for wid in self.weather_ids:
+            d = int(self._weather_to_domain(wid))
+            if d < 0 or d >= self.num_domains:
+                raise ValueError(f"weather_id {wid} mapped to domain {d}, num_domains={self.num_domains}")
+            dom_to_wids[d].append(int(wid))
 
-        # deterministic shuffle to avoid eval being biased by combo ordering
+        missing = [d for d, ws in dom_to_wids.items() if len(ws) == 0]
+        if missing:
+            raise ValueError(
+                f"Eval weather_ids do not cover domains {missing}. "
+                f"Fix eval_weather_ids / DEFAULT_EVAL_WEATHER_IDS."
+            )
+
+        # Upsample each domain list to the same length
+        m = max(len(ws) for ws in dom_to_wids.values())
+        balanced_wids = []
+        for d in range(self.num_domains):
+            ws = dom_to_wids[d]
+            reps = (m + len(ws) - 1) // len(ws)
+            balanced_wids.extend((ws * reps)[:m])  # exactly m per domain
+
+        combos = [(rid, wid) for rid in range(len(self.routes)) for wid in balanced_wids]
+
         seed = int(_get_cfg(self._config, "eval_combo_seed", 0))
         rnd = random.Random(seed)
         rnd.shuffle(combos)
-
         self._combo_queue = deque(combos)
-
 
     def _select_route_and_weather(self):
         if self.eval_mode and self.deterministic_eval:
@@ -448,11 +625,16 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
             return int(rid), int(wid)
 
         # training / non-deterministic eval
+        # training / non-deterministic eval
         if not self._route_queue:
             self._refill_route_queue()
         rid = int(self._route_queue.popleft())
-        wid = int(random.choice(self.weather_ids))
+
+        valid_domains = [d for d, ws in self._domain_to_weather.items() if len(ws) > 0]
+        dom = int(self._rng.choice(valid_domains))
+        wid = int(self._rng.choice(self._domain_to_weather[dom]))
         return rid, wid
+
 
     # ----------------------------
     # spaces
@@ -468,13 +650,26 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         lane_invasion_space = spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32)
         vlm_space = spaces.Box(-np.inf, np.inf, shape=(self.vlm_dim,), dtype=np.float32)
         domain_space = spaces.Box(0.0, float(self.num_domains - 1), shape=(1,), dtype=np.float32)
-        return spaces.Dict({
+        # return spaces.Dict({
+        #     "image": camera_space,
+        #     "collision": collision_space,
+        #     "lane_invasion": lane_invasion_space,
+        #     "vlm": vlm_space,
+        #     "domain_id": domain_space,
+        # })
+    
+        spaces_dict = {
             "image": camera_space,
             "collision": collision_space,
             "lane_invasion": lane_invasion_space,
-            "vlm": vlm_space,
-            "domain_id": domain_space,
-        })
+        }
+
+        if self.include_vlm:
+            spaces_dict["vlm"] = vlm_space
+        if self.include_domain_id:
+            spaces_dict["domain_id"] = domain_space
+
+        return spaces.Dict(spaces_dict)
 
     # ----------------------------
     # VLM
@@ -587,17 +782,35 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
 
     def _get_observation(self, frame_id: Optional[int] = None):
         rgb = self._pull_image_for_frame(frame_id, timeout=0.5)
+
+        if self.aug_enable and (not self.eval_mode):
+            rgb = self._augment_rgb(rgb)
+
         self.camera_image2 = rgb
         self.camera_image = cv2.resize(rgb, (128, 128), interpolation=cv2.INTER_AREA)
 
         vlm = self._encode_vlm(rgb)
-        return {
+        # return {
+        #     "image": self.camera_image,
+        #     "collision": np.array([1.0 if self.collision_detected else 0.0], np.float32),
+        #     "lane_invasion": np.array([1.0 if self.lane_invasion_detected else 0.0], np.float32),
+        #     "vlm": vlm.astype(np.float32),
+        #     "domain_id": np.array([float(self.domain_id)], np.float32),
+        # }
+    
+        obs = {
             "image": self.camera_image,
             "collision": np.array([1.0 if self.collision_detected else 0.0], np.float32),
             "lane_invasion": np.array([1.0 if self.lane_invasion_detected else 0.0], np.float32),
-            "vlm": vlm.astype(np.float32),
-            "domain_id": np.array([float(self.domain_id)], np.float32),
         }
+
+        if self.include_vlm:
+            obs["vlm"] = self._encode_vlm(rgb).astype(np.float32)
+
+        if self.include_domain_id:
+            obs["domain_id"] = np.array([float(self.domain_id)], np.float32)
+
+        return obs
 
     # ----------------------------
     # vehicle spawning
@@ -647,7 +860,12 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         self.lane_invasion_hist = []
         self.previous_lane_invasions = 0
         self.previous_collisions = 0
-        self.low_speed_start_time = None
+        self.low_speed_steps = 0
+        self.low_speed_kmh_thresh = float(_get_cfg(self._config, "low_speed_kmh_thresh", 1.0))
+        self.low_speed_timeout_s = float(_get_cfg(self._config, "low_speed_timeout_s", 10.0))
+        self.low_speed_steps = 0
+        self.low_speed_timeout_steps = int(round(self.low_speed_timeout_s / self._fixed_dt))
+
         self.speed_kmh = 0.0
 
         self.prev_ego_location = None
@@ -694,6 +912,13 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         self.episode_return = 0.0
         self.episode_length = 0
 
+        self._best_dist_to_goal = float(self.initial_distance_to_goal)
+        self._dist_regret_steps = 0
+
+        self.wrong_lane_steps = 0
+        self.offroad_steps = 0
+        self._wrong_lane = False
+        self._offroad = False
 
         # return obs
         obs = self._get_observation(self._last_tick_frame)
@@ -729,6 +954,12 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         vel = self.ego.get_velocity()
         self.speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
 
+        # Step-based low-speed tracking (reproducible across machines)
+        if self.speed_kmh < self.low_speed_kmh_thresh:
+            self.low_speed_steps += 1
+        else:
+            self.low_speed_steps = 0
+
         # obs
         obs = self._get_observation(self._last_tick_frame)
 
@@ -739,12 +970,28 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         # reward + info
         reward, info_dict = self._compute_reward()
 
+        # ----------------------------
+        # Persistency counters (for termination)
+        # ----------------------------
+        if self._offroad:
+            self.offroad_steps += 1
+        else:
+            self.offroad_steps = 0
+
+        if self._wrong_lane:
+            self.wrong_lane_steps += 1
+        else:
+            self.wrong_lane_steps = 0
+
+
         info_dict.update({
             "goal_reached": 0,
             "time_exceeded": 0,
             "not_moving": 0,
             "past_goal": 0,
             "collision": 0,   # if you also want this as a flag distinct from collision_step
+            "wrong_lane": int(self._wrong_lane),
+            "offroad": int(self._offroad),
         })
 
         # ---- accumulate per-episode return/length ----
@@ -755,8 +1002,11 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         steer = float(DISCRETE_STEER[action % self.n_steer])
 
         # eval metrics
-        lane_offset = self.get_lane_offset()
-        heading_err = self.get_angle_offset()
+        # lane_offset = self.get_lane_offset()
+        # heading_err = self.get_angle_offset()
+        lane_offset, cur_wp, route_wp, target_wp = self.get_lane_offset_to_route_lane()
+        heading_err = self.get_angle_offset_to_wp(target_wp if target_wp is not None else cur_wp)
+
         self.off_center_sum += float(lane_offset)
         self.off_center_steps += 1
 
@@ -779,13 +1029,23 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
             "domain_id": int(self.domain_id),
         })
 
+        # Track whether agent is getting consistently farther from goal
+        if dist_to_goal < self._best_dist_to_goal - 0.25:   # 25 cm improvement
+            self._best_dist_to_goal = dist_to_goal
+            self._dist_regret_steps = 0
+        elif dist_to_goal > self._best_dist_to_goal + 2.0:  # 2 m worse than best
+            self._dist_regret_steps += 1
+        else:
+            self._dist_regret_steps = 0
+
         done, terminal_info = self._check_termination()
         info = {**info_dict, **terminal_info}
 
         if done:
             # Determine a single termination reason (priority order)
             reason = "unknown"
-            for k in ("goal_reached", "collision", "past_goal", "not_moving", "time_exceeded"):
+            # for k in ("goal_reached", "collision", "past_goal", "not_moving", "time_exceeded"):
+            for k in ("goal_reached", "collision", "offroad", "wrong_lane", "past_goal", "not_moving", "time_exceeded"):
                 if terminal_info.get(k, False):
                     reason = k
                     break
@@ -886,6 +1146,104 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         denom = (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
         angle = np.arccos(np.clip(float(np.dot(a, b) / denom), -1.0, 1.0))
         return float(angle / np.pi)
+    
+    # ----------------------------
+    # Route-lane (planner-lane) metrics  ✅ important for multi-lane towns
+    # ----------------------------
+
+    def _route_lane_anchor_wp(self):
+        """
+        Waypoint on the lane the planner wants us to be in (uses the next planner waypoint).
+        This encodes the *desired lane_id*.
+        """
+        if (self.waypoints is None) or (len(self.waypoints) == 0):
+            return None
+
+        x, y = float(self.waypoints[0][0]), float(self.waypoints[0][1])
+        loc = carla.Location(x=x, y=y, z=float(self.ego.get_location().z))
+        return self.map.get_waypoint(loc, project_to_road=True, lane_type=carla.LaneType.Driving)
+
+    def _find_wp_on_lane_at_same_s(self, base_wp, target_lane_id: int, max_hops: int = 8):
+        """
+        Starting from base_wp (at current vehicle s), walk left/right lanes until we hit target_lane_id.
+        This gives a waypoint on the *desired lane* at approximately the same longitudinal position.
+        """
+        if base_wp is None:
+            return None
+        if base_wp.lane_id == target_lane_id:
+            return base_wp
+
+        visited = {base_wp.lane_id}
+        frontier = [base_wp]
+        for _ in range(max_hops):
+            next_frontier = []
+            for wp in frontier:
+                for nxt in (wp.get_left_lane(), wp.get_right_lane()):
+                    if nxt is None:
+                        continue
+                    if nxt.lane_type != carla.LaneType.Driving:
+                        continue
+                    if nxt.road_id != base_wp.road_id:
+                        continue
+                    if nxt.lane_id in visited:
+                        continue
+                    if nxt.lane_id == target_lane_id:
+                        return nxt
+                    visited.add(nxt.lane_id)
+                    next_frontier.append(nxt)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return None
+
+    def get_lane_offset_to_route_lane(self):
+        """
+        Lateral distance from vehicle to the centerline of the *route lane* (planner lane).
+        Returns:
+          lane_offset_m, cur_wp, route_wp, target_wp
+        """
+        veh_loc = self.ego.get_location()
+
+        # Current waypoint (nearest driving lane at vehicle position)
+        cur_wp = self.map.get_waypoint(
+            veh_loc, project_to_road=True, lane_type=carla.LaneType.Driving
+        )
+
+        # Desired lane anchor (from planner)
+        route_wp = self._route_lane_anchor_wp()
+
+        # Fallbacks (don’t crash training if planner is empty momentarily)
+        if cur_wp is None or route_wp is None:
+            return float(self.get_lane_offset()), cur_wp, route_wp, None
+
+        # If road_id mismatches (junction / transition), avoid false lane-id comparisons.
+        # Fall back to “nearest lane” offset; route progress/goal shaping still drives behavior there.
+        if cur_wp.road_id != route_wp.road_id:
+            return float(self.get_lane_offset()), cur_wp, route_wp, None
+
+        # Find waypoint on desired lane at the same s (via left/right lane hops)
+        target_wp = self._find_wp_on_lane_at_same_s(cur_wp, int(route_wp.lane_id), max_hops=8)
+        if target_wp is None:
+            return float(self.get_lane_offset()), cur_wp, route_wp, None
+
+        c = target_wp.transform.location
+        off = math.sqrt((veh_loc.x - c.x) ** 2 + (veh_loc.y - c.y) ** 2)
+        return float(off), cur_wp, route_wp, target_wp
+
+    def get_angle_offset_to_wp(self, wp):
+        """
+        Heading error w.r.t. a given waypoint forward direction (normalized by pi).
+        """
+        if wp is None:
+            return 1.0
+        wv = wp.transform.get_forward_vector()
+        ev = self.ego.get_transform().get_forward_vector()
+        a = np.array([wv.x, wv.y], np.float32)
+        b = np.array([ev.x, ev.y], np.float32)
+        denom = (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
+        angle = np.arccos(np.clip(float(np.dot(a, b) / denom), -1.0, 1.0))
+        return float(angle / np.pi)
+
 
     # ----------------------------
     # reward (your logic, minimally adapted)
@@ -927,8 +1285,31 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
             reward_components["r_speed"] = 0.0
 
         # lane/heading shaping
-        lane_d = self.get_lane_offset()
-        ang_d = self.get_angle_offset()
+        # lane_d = self.get_lane_offset()
+        # ang_d = self.get_angle_offset()
+
+        lane_d, cur_wp, route_wp, target_wp = self.get_lane_offset_to_route_lane()
+        ang_d = self.get_angle_offset_to_wp(target_wp if target_wp is not None else cur_wp)
+
+        # ----------------------------
+        # Wrong-lane / off-road flags (used for shaping + termination)
+        # ----------------------------
+        strict_wp = self.map.get_waypoint(
+            self.ego.get_location(), project_to_road=False, lane_type=carla.LaneType.Driving
+        )
+        offroad = (strict_wp is None)
+
+        wrong_lane = False
+        if (not offroad) and (cur_wp is not None) and (route_wp is not None) and (cur_wp.road_id == route_wp.road_id):
+            wrong_lane = (cur_wp.lane_id != route_wp.lane_id)
+
+        # Save for step()/termination
+        self._offroad = bool(offroad)
+        self._wrong_lane = bool(wrong_lane)
+
+        # Shaping penalties (tune later; these are sane starting values)
+        reward_components["offroad"] = -200.0 * float(offroad)
+        reward_components["wrong_lane"] = -50.0 * float(wrong_lane)
 
         lane_k = 40.0
         lane_rad = min(lane_d, 2.0)
@@ -937,16 +1318,15 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         head_k = 100.0
         reward_components["heading"] = -head_k * (min(ang_d, 0.5) ** 2)
 
-        # low speed penalty
-        t_now = time.time()
-        if self.speed_kmh < 1.0:
-            if self.low_speed_start_time is None:
-                self.low_speed_start_time = t_now
-            low_speed_elapsed = t_now - self.low_speed_start_time
-            reward_components["low_speed"] = -50.0 if low_speed_elapsed > 10.0 else -2.0
+        # Step-based low-speed penalty
+        if self.low_speed_steps > 0:
+            if self.low_speed_steps >= self.low_speed_timeout_steps:
+                reward_components["low_speed"] = -50.0
+            else:
+                reward_components["low_speed"] = -2.0
         else:
-            self.low_speed_start_time = None
             reward_components["low_speed"] = 0.0
+
 
         # lane invasion penalty (new invasions only)
         new_inv = len(self.lane_invasion_hist) - self.previous_lane_invasions
@@ -983,30 +1363,15 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         collision = bool(self.collision_detected)
         reached_goal = (self.ego.get_location().distance(self.end_point.location) < 2.0)
         time_exceeded = (self._time_step >= self._max_time_step)
+        offroad_done = (self.offroad_steps >= self.max_offroad_steps)
+        wrong_lane_done = (self.wrong_lane_steps >= self.max_wrong_lane_steps)
 
-        LOW_SPEED_KMH = 1.0
-        LOW_SPEED_TIMEOUT_S = 10.0
-        if self.speed_kmh < LOW_SPEED_KMH:
-            if self.low_speed_start_time is None:
-                self.low_speed_start_time = time.time()
-        else:
-            self.low_speed_start_time = None
 
-        stuck_too_long = (
-            self.low_speed_start_time is not None
-            and (time.time() - self.low_speed_start_time) > LOW_SPEED_TIMEOUT_S
-        )
+        LOW_SPEED_TIMEOUT_STEPS = self.low_speed_timeout_steps
+        stuck_too_long = (self.low_speed_steps >= LOW_SPEED_TIMEOUT_STEPS)
 
         # past_goal using current start point, NOT global arrays
-        past_goal = False
-        if self._start_xy is not None:
-            sx, sy = self._start_xy
-            v_goal = np.array([self.end_point.location.x - sx, self.end_point.location.y - sy], np.float32)
-            v_cur  = np.array([self.ego.get_location().x - sx, self.ego.get_location().y - sy], np.float32)
-            dot_goal = float(np.dot(v_goal, v_goal))
-            dot_cur  = float(np.dot(v_goal, v_cur))
-            if dot_cur > dot_goal:
-                past_goal = True
+        past_goal = (self._dist_regret_steps >= 30)
 
         info = {}
         done = False
@@ -1017,13 +1382,19 @@ class CarlaLaneFollowingVlmEnv(gym.Env):
         elif reached_goal:
             done = True
             info["goal_reached"] = True
+        elif offroad_done:
+            done = True
+            info["offroad"] = True
+        elif wrong_lane_done:
+            done = True
+            info["wrong_lane"] = True
         elif past_goal:
             done = True
             info["past_goal"] = True
         elif stuck_too_long:
             done = True
             info["not_moving"] = True
-            info["stuck_duration"] = float(time.time() - self.low_speed_start_time)
+            info["stuck_duration"] = float(self.low_speed_steps) * float(self._fixed_dt)
         elif time_exceeded:
             done = True
             info["time_exceeded"] = True

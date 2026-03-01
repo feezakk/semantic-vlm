@@ -7,9 +7,14 @@ import ruamel.yaml as yaml
 import car_dreamer
 import dreamerv3
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 warnings.filterwarnings("ignore", ".*truncated to dtype int32.*")
+
+from jax import config
+config.update("jax_transfer_guard", "allow")  # or "log" / "warn"
 
 def wrap_env(env, config):
     args = config.wrapper
@@ -143,7 +148,7 @@ def main(argv=None):
 
     expert = embodied.Checkpoint(logdir / "teacher.ckpt")
     timer.wrap("expert", expert, ["save", "load"])
-    expert.step = step
+    expert.step = teacher_step
     expert.agent = teacher_agent
     expert.replay = teacher_replay
     expert.load()  

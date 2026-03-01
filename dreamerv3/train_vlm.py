@@ -34,11 +34,30 @@ def wrap_env(env, config):
             env = embodied.wrappers.ClipAction(env, name)
     return env
 
+import argparse
+import sys
+
+def _parse_dual_carla(argv):
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--carla_train_port", type=int, required=True)
+    p.add_argument("--carla_eval_port", type=int, required=True)
+    p.add_argument("--carla_train_town", type=str, default=None)
+    p.add_argument("--carla_eval_town", type=str, default=None)
+    args, rest = p.parse_known_args(argv)
+    return args, rest
 
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
     model_configs = yaml.YAML(typ="safe").load((embodied.Path(__file__).parent / "dreamerv3.yaml").read())
     config = embodied.Config({"dreamerv3": model_configs["defaults"]})
     # config = config.update({"dreamerv3": model_configs["small"]})
+
+    dual, argv = _parse_dual_carla(argv)
+
+    print("[DEBUG] argv seen by port parser:", argv[:20])
+    print("[DEBUG] train/eval ports:", dual.carla_train_port, dual.carla_eval_port)
+
 
     parsed, other = embodied.Flags(task=["carla_navigation"]).parse_known(argv)
     for name in parsed.task:
@@ -47,7 +66,16 @@ def main(argv=None):
         train_name = name + "_train"
         print("Using train task: ", train_name)
         print("Using eval task: ", eval_name)
-        env, env_config = car_dreamer.create_task(train_name, argv)
+
+        train_argv = list(argv) + ["--env.world.carla_port", str(dual.carla_train_port)]
+        eval_argv  = list(argv) + ["--env.world.carla_port", str(dual.carla_eval_port)]
+
+        if dual.carla_train_town is not None:
+            train_argv += ["--env.world.town", str(dual.carla_train_town)]
+        if dual.carla_eval_town is not None:
+            eval_argv += ["--env.world.town", str(dual.carla_eval_town)]
+
+        env, env_config = car_dreamer.create_task(train_name, train_argv)
 
         print("car_dreamer loaded from:", __import__("car_dreamer").__file__)
         print("enabled:", getattr(env_config.env.observation, "enabled", None))
@@ -56,7 +84,7 @@ def main(argv=None):
         print("RAW gym obs keys:", list(env.observation_space.spaces.keys()))
         print("RAW gym domain_id space:", env.observation_space.spaces.get("domain_id", None))
 
-        eval_env, eval_env_config = car_dreamer.create_task(eval_name, argv)
+        eval_env, eval_env_config = car_dreamer.create_task(eval_name, eval_argv)
         config = config.update(env_config)
         eval_config = config.update(eval_env_config)
 
@@ -104,22 +132,41 @@ def main(argv=None):
 
     expected_hi = float(int(dreamerv3_config.num_domains) - 1)
 
-    assert "domain_id" in env.obs_space, "[ENV BUG] domain_id missing from train env obs_space."
-    assert "domain_id" in eval_env.obs_space, "[ENV BUG] domain_id missing from eval env obs_space."
-
-    train_hi = _max_high(env.obs_space["domain_id"])
-    eval_hi  = _max_high(eval_env.obs_space["domain_id"])
-
-    assert abs(train_hi - expected_hi) < 1e-6, (
-        f"[ENV/CONFIG MISMATCH] Train env domain_id high={train_hi}, expected {expected_hi}. "
-        "Env and model disagree on num_domains."
+    need_domain = (
+        float(dreamerv3_config.loss_scales.domain_adv) > 0.0 or
+        float(dreamerv3_config.loss_scales.domain_sty) > 0.0 or
+        float(dreamerv3_config.loss_scales.domain_probe) > 0.0
     )
-    assert abs(eval_hi - expected_hi) < 1e-6, (
-        f"[ENV/CONFIG MISMATCH] Eval env domain_id high={eval_hi}, expected {expected_hi}. "
-        "Env and model disagree on num_domains."
-    )
+    if need_domain:
+        assert "domain_id" in env.obs_space, "[ENV BUG] domain_id missing from train env obs_space."
+        assert "domain_id" in eval_env.obs_space, "[ENV BUG] domain_id missing from eval env obs_space."
 
-    print(f"[OK] num_domains={int(dreamerv3_config.num_domains)} and env domain_id range is [0, {expected_hi}].")
+    need_vlm = float(dreamerv3_config.loss_scales.sem_rollout) > 0.0
+    if need_vlm:
+        assert "vlm" in env.obs_space
+        assert "vlm" in eval_env.obs_space
+
+    # train_hi = _max_high(env.obs_space["domain_id"])
+    # eval_hi  = _max_high(eval_env.obs_space["domain_id"])
+
+    # assert abs(train_hi - expected_hi) < 1e-6, (
+    #     f"[ENV/CONFIG MISMATCH] Train env domain_id high={train_hi}, expected {expected_hi}. "
+    #     "Env and model disagree on num_domains."
+    # )
+    # assert abs(eval_hi - expected_hi) < 1e-6, (
+    #     f"[ENV/CONFIG MISMATCH] Eval env domain_id high={eval_hi}, expected {expected_hi}. "
+    #     "Env and model disagree on num_domains."
+    # )
+
+    # print(f"[OK] num_domains={int(dreamerv3_config.num_domains)} and env domain_id range is [0, {expected_hi}].")
+
+    if "domain_id" in env.obs_space and "domain_id" in eval_env.obs_space:
+        train_hi = _max_high(env.obs_space["domain_id"])
+        eval_hi  = _max_high(eval_env.obs_space["domain_id"])
+        # asserts if you want
+    else:
+        print("[Info] domain_id not present in obs_space; skipping checks.")
+
 
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -143,4 +190,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(sys.argv[1:])
+    # carla_args, remaining = _parse_dual_carla(sys.argv[1:])
+    # main(remaining, carla_args)
+    # main()

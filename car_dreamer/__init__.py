@@ -62,8 +62,12 @@ def create_task(task_name: str, argv=None):
     """
     import gym
 
+    print("1-------------------------------")
+
     config = load_task_configs(task_name)
+    print("2-------------------------------")
     config, _ = toolkit.Flags(config).parse_known(argv)
+    print("3-------------------------------")
     return gym.make(config.env.name, config=config.env), config
 
 

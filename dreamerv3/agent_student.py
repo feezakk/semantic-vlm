@@ -189,6 +189,30 @@ class Agent(nj.Module):
         # metrics.update(train_mets,   prefix="train")
         # metrics.update(distill_mets, prefix="distill")
 
+        # ---- NEW: log imagined teacher-vs-student alignment every iteration ----
+        if (traj is not None) and (teacher_traj is not None):
+            # KL on categorical logits: KL(teacher || student)
+            t_dist = self.teacher_wm.rssm.get_dist({"logit": teacher_traj["logit"]})
+            s_dist = self.wm.rssm.get_dist({"logit": traj["logit"]})
+            kl = t_dist.kl_divergence(s_dist)  # [H+1,B] or [H+1,B,G]
+
+            metrics.update(jaxutils_student.tensorstats(kl, "distill/wm/imag_logit_kl"))
+
+            # Deterministic mismatch along imagination
+            deter_delta_l2 = jnp.linalg.norm(teacher_traj["deter"] - traj["deter"], axis=-1)  # [H+1,B]
+            metrics.update(jaxutils_student.tensorstats(deter_delta_l2, "distill/wm/imag_deter_delta_l2"))
+
+            # Stochastic mismatch along imagination (reduce latent dims -> [H+1,B])
+            st = teacher_traj["stoch"] - traj["stoch"]
+            stoch_mse = (st * st).mean(tuple(range(2, st.ndim)))
+            metrics.update(jaxutils_student.tensorstats(stoch_mse, "distill/wm/imag_stoch_mse"))
+
+            # Horizon slices (nice single curves)
+            H = kl.shape[0]
+            metrics["distill/wm/imag_logit_kl_t0"] = kl[0].mean()
+            metrics["distill/wm/imag_logit_kl_tmid"] = kl[H // 2].mean()
+            metrics["distill/wm/imag_logit_kl_tlast"] = kl[-1].mean()
+        # ---- END NEW ----
 
 
 
@@ -388,11 +412,16 @@ class WorldModel(nj.Module):
 
         prev_actions = jnp.concatenate([prev_action[:, None], data["action"][:, :-1]], 1)     
         teacher_prev_actions = jnp.concatenate([teacher_prev_action[:, None], teacher_data["action"][:, :-1]], 1)
-        teacher_post, teacher_prior = self.teacher_wm.rssm.observe(teacher_embed, teacher_prev_actions, teacher_data["is_first"], teacher_prev_latent)
-        # teacher_post  = jax.tree_map(sg, teacher_post)
-        # teacher_prior = jax.tree_map(sg, teacher_prior)
+        teacher_post, teacher_prior = self.teacher_wm.rssm.observe(
+            teacher_embed, teacher_prev_actions, teacher_data["is_first"], teacher_prev_latent)
+        teacher_post  = jax.tree_map(sg, teacher_post)
+        teacher_prior = jax.tree_map(sg, teacher_prior)
+        teacher_embed = sg(teacher_embed)
+
 
         post, prior = self.rssm.observe(embed, prev_actions, data["is_first"], prev_latent)
+
+
 
         # embed = self.encoder(data)
         # prev_latent, prev_action = state
@@ -423,6 +452,7 @@ class WorldModel(nj.Module):
             out = out if isinstance(out, dict) else {name: out}
             dists.update(out)
         losses = {}
+        diag = {}
         losses["dyn"] = self.rssm.dyn_loss(post, prior, **self.config.dyn_loss)
         losses["rep"] = self.rssm.rep_loss(post, prior, **self.config.rep_loss)
         print("data:", data.keys())
@@ -432,54 +462,76 @@ class WorldModel(nj.Module):
             assert loss.shape == embed.shape[:2], (key, loss.shape)
             losses[key] = loss
 
-        teacher_deter = teacher_post["deter"]   # shape (16, 64, 4096)
-        teacher_stoch = teacher_post["stoch"]   # shape (16, 64, 32, 32)
+        # teacher_deter = teacher_post["deter"]   # shape (16, 64, 4096)
+        # teacher_stoch = teacher_post["stoch"]   # shape (16, 64, 32, 32)
 
-        student_deter = post["deter"]   # shape (16, 64, 4096)
-        student_stoch = post["stoch"]   # shape (16, 64, 32, 32)
+        # student_deter = post["deter"]   # shape (16, 64, 4096)
+        # student_stoch = post["stoch"]   # shape (16, 64, 32, 32)
 
-        total_kl = 0
-        N = student_stoch.shape[2]  # e.g. 32
-        for i in range(N):  # e.g. 32
-            teacher_probs_i = jax.nn.softmax(teacher_stoch[:, :, i, :], axis=-1) 
-            student_probs_i = jax.nn.softmax(student_stoch[:, :, i, :], axis=-1)
+        # total_kl = 0
+        # N = student_stoch.shape[2]  # e.g. 32
+        # for i in range(N):  # e.g. 32
+        #     teacher_probs_i = jax.nn.softmax(teacher_stoch[:, :, i, :], axis=-1) 
+        #     student_probs_i = jax.nn.softmax(student_stoch[:, :, i, :], axis=-1)
 
-            teacher_dist_i = distrax.Categorical(probs=teacher_probs_i)
-            student_dist_i = distrax.Categorical(probs=student_probs_i)
+        #     teacher_dist_i = distrax.Categorical(probs=teacher_probs_i)
+        #     student_dist_i = distrax.Categorical(probs=student_probs_i)
 
-            kl_i = teacher_dist_i.kl_divergence(student_dist_i)  # shape [T,B]
-            total_kl += kl_i  # Sum over factors
+        #     kl_i = teacher_dist_i.kl_divergence(student_dist_i)  # shape [T,B]
+        #     total_kl += kl_i  # Sum over factors
 
         
-        #########################################
-        # Change 11/4/2025 19:46 PM
-        #########################################
+        # #########################################
+        # # Change 11/4/2025 19:46 PM
+        # #########################################
 
-        losses["posterior_stoch_kl"] = jnp.mean(total_kl)
+        # losses["posterior_stoch_kl"] = jnp.mean(total_kl)
 
-        losses["posterior_deter_kl"] = jnp.mean((teacher_deter - student_deter) ** 2)
+        # losses["posterior_deter_kl"] = jnp.mean((teacher_deter - student_deter) ** 2)
 
-        teacher_deter = teacher_prior["deter"]   # shape (16, 64, 4096)
-        teacher_stoch = teacher_prior["stoch"]   # shape (16, 64, 32, 32)
+        # teacher_deter = teacher_prior["deter"]   # shape (16, 64, 4096)
+        # teacher_stoch = teacher_prior["stoch"]   # shape (16, 64, 32, 32)
 
-        student_deter = prior["deter"]   # shape (16, 64, 4096)
-        student_stoch = prior["stoch"]   # shape (16, 64, 32, 32)
+        # student_deter = prior["deter"]   # shape (16, 64, 4096)
+        # student_stoch = prior["stoch"]   # shape (16, 64, 32, 32)
 
-        losses["prior_deter_kl"] = jnp.mean((teacher_deter - student_deter) ** 2)
+        # losses["prior_deter_kl"] = jnp.mean((teacher_deter - student_deter) ** 2)
         
-        total_kl = 0
-        N = student_stoch.shape[2]  # e.g. 32
-        for i in range(N):  # e.g. 32
-            teacher_probs_i = jax.nn.softmax(teacher_stoch[:, :, i, :], axis=-1) 
-            student_probs_i = jax.nn.softmax(student_stoch[:, :, i, :], axis=-1)
+        # total_kl = 0
+        # N = student_stoch.shape[2]  # e.g. 32
+        # for i in range(N):  # e.g. 32
+        #     teacher_probs_i = jax.nn.softmax(teacher_stoch[:, :, i, :], axis=-1) 
+        #     student_probs_i = jax.nn.softmax(student_stoch[:, :, i, :], axis=-1)
 
-            teacher_dist_i = distrax.Categorical(probs=teacher_probs_i)
-            student_dist_i = distrax.Categorical(probs=student_probs_i)
+        #     teacher_dist_i = distrax.Categorical(probs=teacher_probs_i)
+        #     student_dist_i = distrax.Categorical(probs=student_probs_i)
 
-            kl_i = teacher_dist_i.kl_divergence(student_dist_i)  # shape [T,B]
-            total_kl += kl_i  # Sum over factors
+        #     kl_i = teacher_dist_i.kl_divergence(student_dist_i)  # shape [T,B]
+        #     total_kl += kl_i  # Sum over factors
 
-        losses["prior_stoch_kl"] = jnp.mean(total_kl)
+        # losses["prior_stoch_kl"] = jnp.mean(total_kl)
+
+        # --- Posterior stochastic KL: KL(teacher || student) using logits ---
+        t_post_dist = self.teacher_wm.rssm.get_dist({"logit": teacher_post["logit"]})
+        s_post_dist = self.rssm.get_dist({"logit": post["logit"]})
+        post_kl = t_post_dist.kl_divergence(s_post_dist)  # shape usually [T,B,G] or [T,B]
+
+        losses["posterior_stoch_kl"] = post_kl.mean()
+
+        # --- Posterior deterministic mismatch (MSE + extra diagnostics later) ---
+        losses["posterior_deter_kl"] = jnp.mean((teacher_post["deter"] - post["deter"]) ** 2)
+
+        # --- Prior stochastic KL ---
+        t_prior_dist = self.teacher_wm.rssm.get_dist({"logit": teacher_prior["logit"]})
+        s_prior_dist = self.rssm.get_dist({"logit": prior["logit"]})
+        prior_kl = t_prior_dist.kl_divergence(s_prior_dist)
+
+        losses["prior_stoch_kl"] = prior_kl.mean()
+
+        # --- Prior deterministic mismatch ---
+        losses["prior_deter_kl"] = jnp.mean((teacher_prior["deter"] - prior["deter"]) ** 2)
+
+
 
         # post_t  = self.teacher_wm.rssm.get_dist(teacher_post)
         # prior_t = self.teacher_wm.rssm.get_dist(teacher_prior)
@@ -518,6 +570,18 @@ class WorldModel(nj.Module):
             kl_deter_arr = jnp.stack(kl_deter_list, axis=0)            # [H, batch]
             losses["dist_deter_imagined"] = kl_deter_arr.mean()
 
+            # Add a few horizon slices (scalars) for plotting KL-vs-training at key horizon points
+            H = kl_logit_arr.shape[0]
+            # metrics["distill/wm/imag_logit_kl_t0"]   = kl_logit_arr[0].mean()
+            # metrics["distill/wm/imag_logit_kl_tmid"] = kl_logit_arr[H // 2].mean()
+            # metrics["distill/wm/imag_logit_kl_tlast"]= kl_logit_arr[-1].mean()
+
+            diag["distill/wm/imag_logit_kl_t0"]    = kl_logit_arr[0].mean()
+            diag["distill/wm/imag_logit_kl_tmid"]  = kl_logit_arr[H // 2].mean()
+            diag["distill/wm/imag_logit_kl_tlast"] = kl_logit_arr[-1].mean()
+
+
+
 
         distill = {}
         if "posterior_stoch_kl" in losses:
@@ -553,6 +617,81 @@ class WorldModel(nj.Module):
         # End Change 11/2/2025 2:50 PM
         #########################################
 
+        # -----------------------------
+        # Distillation diagnostics (plot-friendly)
+        # -----------------------------
+        def _cosine(a, b, eps=1e-8):
+            a = a / (jnp.linalg.norm(a, axis=-1, keepdims=True) + eps)
+            b = b / (jnp.linalg.norm(b, axis=-1, keepdims=True) + eps)
+            return jnp.sum(a * b, axis=-1)  # [T,B]
+
+        def _log_latent_diag(metrics, t_lat, s_lat, tag):
+            # deter: [T,B,D]
+            t_d = t_lat["deter"]
+            s_d = s_lat["deter"]
+
+            delta_l2 = jnp.linalg.norm(s_d - t_d, axis=-1)          # [T,B]
+            cos_sim  = _cosine(s_d, t_d)                            # [T,B]
+            t_norm   = jnp.linalg.norm(t_d, axis=-1)                # [T,B]
+            s_norm   = jnp.linalg.norm(s_d, axis=-1)                # [T,B]
+            rel_l2   = delta_l2 / (t_norm + 1e-8)                   # [T,B]
+
+            # log stats as scalars via tensorstats => mean/std/min/max are logged
+            # metrics.update(jaxutils_student.tensorstats(delta_l2, f"distill/{tag}_deter_delta_l2"))
+            # metrics.update(jaxutils_student.tensorstats(rel_l2,   f"distill/{tag}_deter_rel_delta_l2"))
+            # metrics.update(jaxutils_student.tensorstats(cos_sim,  f"distill/{tag}_deter_cos"))
+            # metrics.update(jaxutils_student.tensorstats(t_norm,   f"distill/{tag}_teacher_deter_norm"))
+            # metrics.update(jaxutils_student.tensorstats(s_norm,   f"distill/{tag}_student_deter_norm"))
+
+
+            diag.update(jaxutils_student.tensorstats(delta_l2, f"distill/{tag}_deter_delta_l2"))
+            diag.update(jaxutils_student.tensorstats(rel_l2,   f"distill/{tag}_deter_rel_delta_l2"))
+            diag.update(jaxutils_student.tensorstats(cos_sim,  f"distill/{tag}_deter_cos"))
+            diag.update(jaxutils_student.tensorstats(t_norm,   f"distill/{tag}_teacher_deter_norm"))
+            diag.update(jaxutils_student.tensorstats(s_norm,   f"distill/{tag}_student_deter_norm"))
+
+        # Posterior (teacher_post vs post)
+        # _log_latent_diag(metrics, teacher_post, post, "post")
+
+        # # Prior (teacher_prior vs prior)
+        # _log_latent_diag(metrics, teacher_prior, prior, "prior")
+
+        _log_latent_diag(diag, teacher_post, post, "post")
+        _log_latent_diag(diag, teacher_prior, prior, "prior")
+
+
+        # # Entropy diagnostics (stochastic uncertainty)
+        t_post_ent  = self.teacher_wm.rssm.get_dist({"logit": teacher_post["logit"]}).entropy()
+        s_post_ent  = self.rssm.get_dist({"logit": post["logit"]}).entropy()
+        t_prior_ent = self.teacher_wm.rssm.get_dist({"logit": teacher_prior["logit"]}).entropy()
+        s_prior_ent = self.rssm.get_dist({"logit": prior["logit"]}).entropy()
+
+        # metrics.update(jaxutils_student.tensorstats(t_post_ent,  "distill/post_teacher_ent"))
+        # metrics.update(jaxutils_student.tensorstats(s_post_ent,  "distill/post_student_ent"))
+        # metrics.update(jaxutils_student.tensorstats(t_prior_ent, "distill/prior_teacher_ent"))
+        # metrics.update(jaxutils_student.tensorstats(s_prior_ent, "distill/prior_student_ent"))
+
+        # # If KL has group dimension, log group-mean + group-std summaries.
+        # if post_kl.ndim == 3:
+        #     metrics.update(jaxutils_student.tensorstats(post_kl.mean(-1), "distill/post_kl_mean_over_groups"))
+        #     metrics.update(jaxutils_student.tensorstats(post_kl.std(-1),  "distill/post_kl_std_over_groups"))
+        # if prior_kl.ndim == 3:
+        #     metrics.update(jaxutils_student.tensorstats(prior_kl.mean(-1), "distill/prior_kl_mean_over_groups"))
+        #     metrics.update(jaxutils_student.tensorstats(prior_kl.std(-1),  "distill/prior_kl_std_over_groups"))
+
+        diag.update(jaxutils_student.tensorstats(t_post_ent,  "distill/post_teacher_ent"))
+        diag.update(jaxutils_student.tensorstats(s_post_ent,  "distill/post_student_ent"))
+        diag.update(jaxutils_student.tensorstats(t_prior_ent, "distill/prior_teacher_ent"))
+        diag.update(jaxutils_student.tensorstats(s_prior_ent, "distill/prior_student_ent"))
+
+        if post_kl.ndim == 3:
+            diag.update(jaxutils_student.tensorstats(post_kl.mean(-1), "distill/post_kl_mean_over_groups"))
+            diag.update(jaxutils_student.tensorstats(post_kl.std(-1),  "distill/post_kl_std_over_groups"))
+        if prior_kl.ndim == 3:
+            diag.update(jaxutils_student.tensorstats(prior_kl.mean(-1), "distill/prior_kl_mean_over_groups"))
+            diag.update(jaxutils_student.tensorstats(prior_kl.std(-1),  "distill/prior_kl_std_over_groups"))
+
+
 
 
 
@@ -565,10 +704,20 @@ class WorldModel(nj.Module):
         teacher_last_action = teacher_data["action"][:, -1]
         state = last_latent, last_action
         teacher_state = teacher_last_latent, teacher_last_action
+        # metrics = self._metrics(data, dists, post, prior, losses, model_loss)
+        # metrics["model_loss_raw"] = model_loss  # Store model loss for Curious Replay prioritization
+        # metrics.update({f"distill/{k}": v for k, v in distill.items()})
+        # return model_loss.mean(), (state,teacher_state, out, metrics)
+
         metrics = self._metrics(data, dists, post, prior, losses, model_loss)
-        metrics["model_loss_raw"] = model_loss  # Store model loss for Curious Replay prioritization
+        metrics["model_loss_raw"] = model_loss
         metrics.update({f"distill/{k}": v for k, v in distill.items()})
-        return model_loss.mean(), (state,teacher_state, out, metrics)
+
+        # <-- NEW: actually keep your diagnostics
+        metrics.update(diag)
+
+        return model_loss.mean(), (state, teacher_state, out, metrics)
+
     
     def imagination_loss(self, data, state):
         embed = self.encoder(data)
@@ -757,6 +906,7 @@ class ImagActorCritic(nj.Module):
                 return action_array
 
             losses = {}
+
             policy = lambda s: self.actor(sg(s)).sample(seed=nj.rng())
             carry = None
             action = lambda s: teacher_policy(s).sample(seed=nj.rng())
@@ -859,14 +1009,48 @@ class ImagActorCritic(nj.Module):
         loss *= self.config.loss_scales.actor
         metrics.update(self._metrics(traj, policy, logpi, ent, adv))
 
-        kl_coef = self.config.kl_coef if hasattr(self.config, "kl_coef") else 2.0
+        kl_coef = self.config.kl_coef if hasattr(self.config, "kl_coef") else 0.0
         # add the KL to the total loss
-        # loss += kl_coef * kl_div[:-1]  # or .mean() if you prefer a scalar
+        loss += kl_coef * kl_div[:-1]  # or .mean() if you prefer a scalar
 
         # For logging
         metrics["kl_mean"] = (kl_coef * kl_div[:-1]).mean()
         metrics["kl_div"] = kl_div
-        metrics.update(jaxutils_student.tensorstats(kl_div, "distill/actor/policy_kl"))
+        # metrics.update(jaxutils_student.tensorstats(kl_div, "distill/actor/policy_kl"))
+        metrics.update(jaxutils_student.tensorstats(kl_div, "distill/actor/teacher_action_logp_gap"))
+
+
+        # --- Policy disagreement diagnostics (teacher policy vs student actor) ---
+        # Use teacher states so teacher_policy is well-defined.
+        T, B = teacher_traj["deter"].shape[:2]
+
+        # Teacher states (exclude last if you like)
+        t_states = {
+            "deter": teacher_traj["deter"][:-1].reshape((T-1) * B, -1),
+            "stoch": teacher_traj["stoch"][:-1].reshape(((T-1) * B,) + teacher_traj["stoch"].shape[2:]),
+        }
+
+        # Teacher action dist (from teacher_policy)
+        t_outs, _ = self.teacher_policy(t_states, None)
+        t_dist = t_outs["action"]  # Distrax distribution over actions, batch=(T-1)*B
+
+        # Student action dist on the same teacher states
+        s_dist = self.actor(sg(t_states))
+
+        # KL(teacher || student) per state
+        kl_ts = t_dist.kl_divergence(s_dist)  # [(T-1)*B]
+        # metrics["distill/actor/policy_kl_mean"] = kl_ts.mean()
+        # metrics["distill/actor/policy_kl_std"]  = kl_ts.std()
+
+        metrics["distill/actor/state_kl_mean"] = kl_ts.mean()
+        metrics["distill/actor/state_kl_std"]  = kl_ts.std()
+
+
+        # Agreement rate (mode)
+        t_mode = jnp.argmax(t_dist.probs, axis=-1)
+        s_mode = jnp.argmax(s_dist.probs, axis=-1)
+        metrics["distill/actor/action_mode_agree"] = (t_mode == s_mode).mean()
+
 
 
         if key == "teacher":

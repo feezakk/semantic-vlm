@@ -9,7 +9,7 @@
    Train the DreamerV3 teacher model for the overtaking task:
 
    ```bash
-   bash train_dm3_teacher.sh 3000 0 --task carla_overtake --dreamerv3.logdir ./logdir/carla_overtake_teacher/ --dreamerv3.run.steps=100000
+   bash train_dm3_teacher.sh 8000 0 --task carla_overtake --dreamerv3.logdir ./logdir/carla_overtake_teacher/ --dreamerv3.run.steps=100000
    ```
 
 ### 2. Train Teacher Model - Lane Following
@@ -17,7 +17,7 @@
    Train the DreamerV3 teacher model for the lane following task:
 
    ```bash
-   bash train_dm3_teacher.sh 3000 0 --task carla_lane_following --dreamerv3.logdir ./logdir/carla_lane_following_teacher/ --dreamerv3.run.steps=100000
+   bash train_dm3_teacher.sh 8000 0 --task carla_lane_following --dreamerv3.logdir ./logdir/carla_lane_following_teacher/ --dreamerv3.run.steps=100000
    ```
 
 ## 2. Baseline Hindesight Experience Replay (HER) without distillation on CARLA Overtaking and Lane Following Tasks
@@ -63,7 +63,7 @@
    Run the DreamerV3 student for lane following without bisimulation:
 
    ```bash
-   bash train_dm3_student_bisim.sh 3000 0 \
+   bash train_dm3_student_bisim.sh 8000 0 \
      --task carla_lane_following_student \
      --dreamerv3.logdir ./logdir/carla_lane_following_student/ \
      --dreamerv3.enable_bisim=False \
@@ -79,7 +79,7 @@
    Run the DreamerV3 student for overtaking without bisimulation:
 
    ```bash
-   bash train_dm3_student_bisim.sh 3000 0 \
+   bash train_dm3_student_bisim.sh 2000 0 \
      --task carla_overtake_student \
      --dreamerv3.logdir ./logdir/carla_overtake_student/ \
      --dreamerv3.enable_bisim=False \
@@ -126,6 +126,30 @@
    bash train_dm3_teacher.sh 3000 0 \
      --task carla_lane_following_student \
      --dreamerv3.logdir ./logdir/carla_lane_following_student_sparse/\
+     --dreamerv3.run.steps=100000
+   ```
+
+## 6. Baseline Policy Distillation on CARLA Overtaking and Lane Following Tasks 
+
+### 1. Train Student Model - Lane Following with policy distillation
+
+   Run the DreamerV3 student for lane following without bisimulation:
+
+   ```bash
+   bash train_dm3_policy_distillation.sh 2000 0 \
+     --task carla_lane_following_student \
+     --dreamerv3.logdir ./logdir/carla_lane_following_policy_distillation/ \
+     --dreamerv3.run.steps=100000
+   ```
+
+### 2. Train Student Model - Overtaking with policy distillation
+
+   Run the DreamerV3 student for overtaking without bisimulation:
+
+   ```bash
+   bash train_dm3_policy_distillation.sh 2000 0 \
+     --task carla_overtake_student \
+     --dreamerv3.logdir ./logdir/carla_overtake_policy_distillation/ \
      --dreamerv3.run.steps=100000
    ```
 
@@ -213,6 +237,22 @@
    bash eval_dm3_teacher.sh 3000 0 ./logdir/carla_overtake_HER_with_distillation/checkpoint.ckpt --task carla_overtake_student_test --dreamerv3.logdir ./eval_logdir/eval_overtake_student_HER_with_distillation_unseen
    ```
 
+### Evaluate Student on Policy Distillation - Overtaking Seen
+
+   Evaluate the DreamerV3 teacher model for the overtaking task:
+
+   ```bash
+   bash eval_dm3_teacher.sh 3000 0 ./logdir/carla_overtake_policy_distillation/checkpoint.ckpt --task carla_overtake_student --dreamerv3.logdir ./eval_logdir/eval_overtake_policy_distillation_seen
+   ```
+
+### Evaluate Student on Policy Distillation - Overtaking Unseen
+
+   Evaluate the DreamerV3 teacher model for the overtaking task:
+
+   ```bash
+   bash eval_dm3_teacher.sh 3000 0 ./logdir/carla_overtake_policy_distillation/checkpoint.ckpt --task carla_overtake_student_test --dreamerv3.logdir ./eval_logdir/eval_overtake_policy_distillation_unseen
+   ```
+
 ## 2. Evaluation Teacher on CARLA Lane Following Tasks  
 
 ### Evaluate Teacher - Lane Following Seen
@@ -294,4 +334,21 @@
    ```bash
    bash eval_dm3_teacher_lf.sh 3000 0 ./logdir/carla_lane_following_HER_with_distillation/checkpoint.ckpt --task carla_lane_following_student_test --dreamerv3.logdir ./eval_logdir/eval_lane_following_student_HER_with_distillation_unseen
    ```
+
+### Evaluate Student on Policy Distillation - Lane Following Seen
+
+   Evaluate the DreamerV3 teacher model for the lane following task:
+
+   ```bash
+   bash eval_dm3_teacher_lf.sh 3000 0 ./logdir/carla_lane_following_policy_distillation/checkpoint.ckpt --task carla_lane_following_student --dreamerv3.logdir ./eval_logdir/eval_lane_following_policy_distillation_seen
+   ```
+
+### Evaluate Student on Policy Distillation - Lane Following Unseen
+
+   Evaluate the DreamerV3 teacher model for the lane following task:
+
+   ```bash
+   bash eval_dm3_teacher_lf.sh 3000 0 ./logdir/carla_lane_following_policy_distillation/checkpoint.ckpt --task carla_lane_following_student_test --dreamerv3.logdir ./eval_logdir/eval_lane_following_policy_distillation_unseen
+   ```
+
 

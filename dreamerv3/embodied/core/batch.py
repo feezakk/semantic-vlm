@@ -37,7 +37,33 @@ class BatchEnv(base.Env):
             obs = [ob() for ob in obs]
             info = [inf() for inf in info]
         obs = {k: np.array([ob[k] for ob in obs]) for k in obs[0]}
-        info = {k: np.array([inf[k] for inf in info]) for k in info[0]}
+        # info = {k: np.array([inf[k] for inf in info]) for k in info[0]}
+        # return obs, info
+    
+        # Batch `info` robustly: different envs may emit different info keys.
+        keys = sorted({k for inf in info for k in inf.keys()})
+
+        def _default_like(x):
+            # Match type/shape so np.array stacking stays sane.
+            if isinstance(x, np.ndarray):
+                return np.zeros_like(x)
+            if isinstance(x, (np.bool_, bool)):
+                return False
+            if isinstance(x, (np.integer, int)):
+                return 0
+            if isinstance(x, (np.floating, float)):
+                return 0.0
+            if isinstance(x, str):
+                return ""
+            return 0
+
+        info_batched = {}
+        for k in keys:
+            sample = next((inf[k] for inf in info if k in inf), None)
+            default = _default_like(sample) if sample is not None else 0
+            info_batched[k] = np.array([inf.get(k, default) for inf in info])
+
+        info = info_batched
         return obs, info
 
     def render(self):

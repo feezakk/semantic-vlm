@@ -5,12 +5,46 @@ import jax
 import numpy as np
 import csv, atexit
 
+import csv, atexit
+import numpy as np
+
 
 def train(agent, teacher_policy, env, eval_env, replay, eval_replay, teacher_replay, logger, args):
 
     logdir = embodied.Path(args.logdir)
     logdir.mkdirs()
     print("Logdir", logdir)
+
+    # def _make_scalar_metrics_writer(path):
+    #     path = embodied.Path(path)
+    #     path.parent.mkdirs()
+    #     exists = path.exists()
+    #     f = open(str(path), "a", newline="")
+    #     w = csv.writer(f)
+    #     if not exists:
+    #         w.writerow(["env_step", "name", "value"])
+    #         f.flush()
+    #     return f, w
+
+    # metrics_csv_f, metrics_csv_w = _make_scalar_metrics_writer(logdir / "metrics.csv")
+    # atexit.register(lambda: metrics_csv_f.close())
+
+    # def _write_scalar_metrics(env_step, metrics_dict):
+    #     # Only scalar-like values; skip arrays/videos/strings/etc.
+    #     for k, v in metrics_dict.items():
+    #         if isinstance(v, dict):
+    #             continue
+    #         try:
+    #             arr = np.asarray(v)
+    #             if arr.shape != ():   # not a scalar
+    #                 continue
+    #             val = float(arr)
+    #         except Exception:
+    #             continue
+    #         metrics_csv_w.writerow([int(env_step), k, val])
+    #     metrics_csv_f.flush()
+
+
     should_expl = embodied.when.Until(args.expl_until)
     should_train = embodied.when.Ratio(args.train_ratio / args.batch_steps)
     should_log = embodied.when.Clock(args.log_every)
@@ -206,6 +240,32 @@ def train(agent, teacher_policy, env, eval_env, replay, eval_replay, teacher_rep
             logger.add(eval_replay.stats, prefix="eval_replay")
             logger.add(timer.stats(), prefix="timer")
             logger.write(fps=True)
+
+        # if should_log(step):
+        #     agg = metrics.result()
+        #     report = agent.report(batch[0], teacher_batch[0])
+        #     report = {f"report/{k}": v for k, v in report.items()}
+
+        #     with timer.scope("dataset_eval"):
+        #         eval_batch = next(dataset_eval)
+        #     eval_report = agent.report(eval_batch, eval_batch)
+        #     eval_report = {f"eval/{k}": v for k, v in eval_report.items()}
+
+        #     # Combine everything you care about into one dict.
+        #     # NOTE: `agg` already tends to contain "train/..." keys if you used prefix="train".
+        #     combined = {}
+        #     combined.update(agg)
+        #     combined.update(report)
+        #     combined.update(eval_report)
+
+        #     _write_scalar_metrics(logger.step, combined)
+
+        #     # Normal logger outputs
+        #     logger.add(agg)
+        #     logger.add({k.replace("report/", ""): v for k, v in report.items()}, prefix="report")
+        #     logger.add({k.replace("eval/", ""): v for k, v in eval_report.items()}, prefix="eval")
+        #     logger.write(fps=True)
+
 
     driver.on_step(train_step)
 

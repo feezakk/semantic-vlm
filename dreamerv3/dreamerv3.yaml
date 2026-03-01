@@ -9,8 +9,20 @@ defaults:
   eval_dir: ""
   filter: ".*"
 
-  num_domains: 4
+  use_semsty: True
+  actor_inputs: [sem]
+  critic_inputs: [sem]
+
+  domain_grl_max: 1.0       
+  domain_grl_schedule: "dann"
+
+  domain_head_input: sem
+
+  num_domains: 2
   domain_scale: 2.0
+
+  sty_ctx_ema: 0.9
+
 
 
   enable_bisim: True
@@ -29,13 +41,13 @@ defaults:
 
   run:
     script: train
-    steps: 1e5
+    steps: 2e5
     expl_until: 0
     log_every: 60
     save_every: 10000
-    eval_every: 2000
+    eval_every: 10000
     eval_initial: True
-    eval_eps: 25
+    eval_eps: 25 #1 #25 #64
     eval_samples: 1
     train_ratio: 512
     train_fill: 0
@@ -113,6 +125,7 @@ defaults:
       cnn_blocks: 0,
       image_dist: mse,
       vector_dist: symlog_mse,
+      # inputs: [deter, stoch, sty_ctx],
       inputs: [deter, stoch],
       resize: stride,
       winit: normal,
@@ -130,6 +143,7 @@ defaults:
       dist: symlog_disc,
       outscale: 0.0,
       outnorm: False,
+      # inputs: [deter, stoch, sty_ctx],
       inputs: [deter, stoch],
       winit: normal,
       fan: avg,
@@ -157,6 +171,7 @@ defaults:
       dist: binary,
       outscale: 1.0,
       outnorm: False,
+      # inputs: [deter, stoch, sty_ctx],
       inputs: [deter, stoch],
       winit: normal,
       fan: avg,
@@ -185,8 +200,11 @@ defaults:
       bisim_imag_next_deter: 0.1,
       bisim_calib_reg: 1e-4,
       domain_adv: 1.0,
-      sem_rollout: 0.25,
+      sem_rollout: 1.0,
       domain_sty: 1.0,
+      domain_probe: 1.0,
+      policy_distill_scale: 1.0
+
     }
 
   # --- bisimulation target (teacher) ---

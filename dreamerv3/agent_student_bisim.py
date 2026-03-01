@@ -426,6 +426,13 @@ class WorldModel(nj.Module):
             out = out if isinstance(out, dict) else {name: out}
             dists.update(out)
         losses = {}
+        diag = {}
+
+        def _cosine(a, b, eps=1e-8):
+            a = a / (jnp.linalg.norm(a, axis=-1, keepdims=True) + eps)
+            b = b / (jnp.linalg.norm(b, axis=-1, keepdims=True) + eps)
+            return jnp.sum(a * b, axis=-1)  # [...,]
+
 
         # # ------------------------------------------------------------------
         # # Ensure phi_head and bisim_calib have created parameters even in
@@ -475,6 +482,43 @@ class WorldModel(nj.Module):
         losses["prior_stoch_kl"] = prior_kl_per_group.mean()
         losses["prior_deter_kl"] = jnp.mean((teacher_prior["deter"] - prior["deter"]) ** 2)
 
+        # ---------------------------
+        # Distillation diagnostics (posterior/prior)
+        # ---------------------------
+        post_delta_l2 = jnp.linalg.norm(post["deter"] - teacher_post["deter"], axis=-1)   # [T,B]
+        prior_delta_l2 = jnp.linalg.norm(prior["deter"] - teacher_prior["deter"], axis=-1) # [T,B]
+
+        diag.update(jaxutils_student.tensorstats(post_delta_l2,  "distill/wm/post_deter_delta_l2"))
+        diag.update(jaxutils_student.tensorstats(prior_delta_l2, "distill/wm/prior_deter_delta_l2"))
+
+        diag.update(jaxutils_student.tensorstats(_cosine(post["deter"],  teacher_post["deter"]),  "distill/wm/post_deter_cos"))
+        diag.update(jaxutils_student.tensorstats(_cosine(prior["deter"], teacher_prior["deter"]), "distill/wm/prior_deter_cos"))
+
+        diag.update(jaxutils_student.tensorstats(jnp.linalg.norm(post["deter"], axis=-1),        "distill/wm/post_student_deter_norm"))
+        diag.update(jaxutils_student.tensorstats(jnp.linalg.norm(teacher_post["deter"], axis=-1),"distill/wm/post_teacher_deter_norm"))
+        diag.update(jaxutils_student.tensorstats(jnp.linalg.norm(prior["deter"], axis=-1),       "distill/wm/prior_student_deter_norm"))
+        diag.update(jaxutils_student.tensorstats(jnp.linalg.norm(teacher_prior["deter"], axis=-1),"distill/wm/prior_teacher_deter_norm"))
+
+        # Entropy alignment (stochastic uncertainty)
+        t_post_ent  = self.teacher_wm.rssm.get_dist({"logit": teacher_post["logit"]}).entropy()
+        s_post_ent  = self.rssm.get_dist({"logit": post["logit"]}).entropy()
+        t_prior_ent = self.teacher_wm.rssm.get_dist({"logit": teacher_prior["logit"]}).entropy()
+        s_prior_ent = self.rssm.get_dist({"logit": prior["logit"]}).entropy()
+
+        diag.update(jaxutils_student.tensorstats(t_post_ent,  "distill/wm/post_teacher_ent"))
+        diag.update(jaxutils_student.tensorstats(s_post_ent,  "distill/wm/post_student_ent"))
+        diag.update(jaxutils_student.tensorstats(t_prior_ent, "distill/wm/prior_teacher_ent"))
+        diag.update(jaxutils_student.tensorstats(s_prior_ent, "distill/wm/prior_student_ent"))
+
+        # Groupwise KL spread (if categorical groups exist)
+        if posterior_kl_per_group.ndim == 3:
+            diag.update(jaxutils_student.tensorstats(posterior_kl_per_group.mean(-1), "distill/wm/post_kl_mean_over_groups"))
+            diag.update(jaxutils_student.tensorstats(posterior_kl_per_group.std(-1),  "distill/wm/post_kl_std_over_groups"))
+        if prior_kl_per_group.ndim == 3:
+            diag.update(jaxutils_student.tensorstats(prior_kl_per_group.mean(-1), "distill/wm/prior_kl_mean_over_groups"))
+            diag.update(jaxutils_student.tensorstats(prior_kl_per_group.std(-1),  "distill/wm/prior_kl_std_over_groups"))
+
+
         if (traj is not None) and (teacher_traj is not None):
             # Reward match under student actions
             s_rew = self.heads["reward"](traj).mean()           # [T+1,B] or [T,B]
@@ -489,10 +533,27 @@ class WorldModel(nj.Module):
             # Next-latent distribution match (1..T)
             s_next = {k: v[1:] for k, v in traj.items() if k in ("stoch","logit","deter")}
             t_next = {k: sg(v[1:]) for k, v in teacher_traj.items() if k in ("stoch","logit","deter")}
+            # s_next_dist = self.rssm.get_dist(s_next)
+            # t_next_dist = self.teacher_wm.rssm.get_dist(t_next)
+            # # losses["bisim_imag_next_kl"] = distrax.kl_divergence(s_next_dist, t_next_dist).mean()
+            # losses["bisim_imag_next_kl"] = s_next_dist.kl_divergence(t_next_dist).mean()
+
             s_next_dist = self.rssm.get_dist(s_next)
             t_next_dist = self.teacher_wm.rssm.get_dist(t_next)
-            # losses["bisim_imag_next_kl"] = distrax.kl_divergence(s_next_dist, t_next_dist).mean()
-            losses["bisim_imag_next_kl"] = s_next_dist.kl_divergence(t_next_dist).mean()
+
+            kl_next = t_next_dist.kl_divergence(s_next_dist)  # [T,B,G] or [T,B]
+            kl_next_tb = kl_next.mean(-1) if kl_next.ndim == 3 else kl_next  # [T,B]
+
+            losses["bisim_imag_next_kl"] = kl_next_tb.mean()
+
+            diag.update(jaxutils_student.tensorstats(kl_next_tb, "distill/bisim/imag_next_kl"))
+            H = kl_next_tb.shape[0]
+            diag["distill/bisim/imag_next_kl_t0"]   = kl_next_tb[0].mean()
+            diag["distill/bisim/imag_next_kl_tmid"] = kl_next_tb[H // 2].mean()
+            diag["distill/bisim/imag_next_kl_tlast"]= kl_next_tb[-1].mean()
+
+
+
             if "deter" in s_next and "deter" in t_next:
                 losses["bisim_imag_next_deter"] = jnp.mean((s_next["deter"] - t_next["deter"]) ** 2)
 
@@ -551,7 +612,12 @@ class WorldModel(nj.Module):
             if t_rew.shape[0] == teacher_traj["action"].shape[0] + 1:
                 t_rew = t_rew[:-1]
 
-            losses["bisim_imag_reward_mse"] = ((s_rew - t_rew) ** 2).mean()
+            # losses["bisim_imag_reward_mse"] = ((s_rew - t_rew) ** 2).mean()
+
+            rew_mse = (s_rew - t_rew) ** 2  # [T,B]
+            losses["bisim_imag_reward_mse"] = rew_mse.mean()
+            diag.update(jaxutils_student.tensorstats(rew_mse, "distill/bisim/imag_reward_mse"))
+
 
             # ------------------------------------------------------------------
             # (B) Next-latent distribution alignment (student vs teacher)
@@ -684,6 +750,15 @@ class WorldModel(nj.Module):
             calib_reg = (scale_eff - 1.0) ** 2 + (bias_eff - 0.0) ** 2
             losses["bisim_calib_reg"] = calib_reg
 
+            diag.update(jaxutils_student.tensorstats(phi_now_gap, "distill/bisim/phi_gap"))
+            diag.update(jaxutils_student.tensorstats(dT_norm,      "distill/bisim/target_norm"))
+            diag.update(jaxutils_student.tensorstats(pred,         "distill/bisim/pred"))
+            diag.update(jaxutils_student.tensorstats(err,          "distill/bisim/error"))
+            diag["distill/bisim/dT_ema"] = self.dT_ema.read()
+            diag["distill/bisim/calib_scale_eff"] = scale_eff
+            diag["distill/bisim/calib_bias_eff"]  = bias_eff
+
+
             # Metrics
             wsum = jnp.sum(mask) + 1e-8
             x_mean = jnp.sum(mask * phi_now_gap) / wsum
@@ -727,8 +802,16 @@ class WorldModel(nj.Module):
             metrics["bisim_bias"]  = bias_eff
 
 
+        # metrics.update({f"distill/{k}": v for k, v in distill.items()})
+        # return model_loss.mean(), (state,teacher_state, out, metrics)
+    
         metrics.update({f"distill/{k}": v for k, v in distill.items()})
+
+        # NEW: ensure diagnostics survive and get logged
+        metrics.update(diag)
+
         return model_loss.mean(), (state,teacher_state, out, metrics)
+
     
     def imagination_loss(self, data, state):
         embed = self.encoder(data)
@@ -884,11 +967,54 @@ class ImagActorCritic(nj.Module):
             **config.actor,
             dist=config.actor_dist_disc if disc else config.actor_dist_cont,
         )
+        # --- NEW: frozen teacher actor for diagnostics (distinct NinJAX path) ---
+        self.teacher_actor = nets_student.MLP(
+            name="teacher_actor",  # IMPORTANT: different name => different variable subtree
+            dims="deter",
+            shape=act_space.shape,
+            **config.actor,
+            dist=config.actor_dist_disc if disc else config.actor_dist_cont,
+        )
+
         self.retnorms = {k: jaxutils_student.Moments(**config.retnorm, name=f"retnorm_{k}") for k in critics}
         self.opt = jaxutils_student.Optimizer(name="actor_opt", **config.actor_opt)
 
+    # def initial(self, batch_size):
+    #     return {}
+
     def initial(self, batch_size):
+        import numpy as np
+        # Force-create teacher_actor params during NinJAX creation pass
+        if nj.creating():
+            # Be robust to wrapper passing an array instead of an int
+            bs = batch_size
+            if not isinstance(bs, (int, np.integer)):
+                bs = int(bs.shape[0]) if hasattr(bs, "shape") else int(len(bs))
+
+            rssm = self.config.rssm
+            deter_dim = int(getattr(rssm, "deter", rssm["deter"]))
+            stoch_dim = int(getattr(rssm, "stoch", rssm["stoch"]))
+            classes  = int(getattr(rssm, "classes", rssm.get("classes", 0)))
+
+            dummy = {
+                "deter": jnp.zeros((bs, deter_dim), dtype=jnp.float32),
+            }
+
+            # Actor Input expects 'stoch' too (your error confirms keys {deter, stoch})
+            if classes and classes > 0:
+                # Discrete RSSM: stoch is [B, stoch, classes]
+                dummy["stoch"] = jnp.zeros((bs, stoch_dim, classes), dtype=jnp.float32)
+                # Not strictly needed for actor, but harmless to include
+                dummy["logit"] = jnp.zeros((bs, stoch_dim, classes), dtype=jnp.float32)
+            else:
+                # Continuous RSSM: stoch is [B, stoch]
+                dummy["stoch"] = jnp.zeros((bs, stoch_dim), dtype=jnp.float32)
+
+            _ = self.teacher_actor(dummy).mean()
+
         return {}
+
+
 
     def policy(self, state, carry):
         return {"action": self.actor(state)}, carry
@@ -999,6 +1125,100 @@ class ImagActorCritic(nj.Module):
         loss *= sg(traj["weight"])[:-1]
         loss *= self.config.loss_scales.actor
         metrics.update(self._metrics(traj, policy, logpi, ent, adv))
+
+        # ----------------------------------------------------------
+        # Distill diagnostics: frozen teacher_actor vs student actor
+        # (meaningful only if teacher_actor weights are loaded)
+        # ----------------------------------------------------------
+        if hasattr(self, "teacher_actor") and (self.teacher_actor is not None):
+            # Teacher states from teacher_traj (exclude last)
+            t_states = {k: teacher_traj[k][:-1] for k in ("deter", "stoch", "logit") if k in teacher_traj}
+            T, B = t_states["deter"].shape[:2]
+
+            flat = {"deter": t_states["deter"].reshape((T * B, -1))}
+            if "stoch" in t_states:
+                flat["stoch"] = t_states["stoch"].reshape((T * B,) + t_states["stoch"].shape[2:])
+            if "logit" in t_states:
+                flat["logit"] = t_states["logit"].reshape((T * B,) + t_states["logit"].shape[2:])
+
+            # Teacher distribution (frozen parameters)
+            t_dist = self.teacher_actor(flat)
+
+            # Student distribution (trainable parameters)
+            s_dist = self.actor(sg(flat))
+
+            # KL(teacher || student)
+            kl_ts = t_dist.kl_divergence(s_dist)
+            metrics.update(jaxutils_student.tensorstats(kl_ts, "distill/actor/state_kl"))
+
+            # Discrete agreement if probs exist; otherwise mean L2 fallback
+            t_probs = getattr(t_dist, "probs", None)
+            s_probs = getattr(s_dist, "probs", None)
+
+            if self.act_space.discrete and (t_probs is not None) and (s_probs is not None):
+                t_mode = jnp.argmax(t_probs, axis=-1)
+                s_mode = jnp.argmax(s_probs, axis=-1)
+                metrics["distill/actor/action_mode_agree"] = (t_mode == s_mode).mean()
+            else:
+                t_mean = t_dist.mean()
+                s_mean = s_dist.mean()
+                metrics["distill/actor/mean_l2"] = jnp.linalg.norm(t_mean - s_mean, axis=-1).mean()
+
+            # Optional sanity check: will be ~0 once things work (not always, but helpful)
+            t_mean = t_dist.mean()
+            s_mean = s_dist.mean()
+            metrics["debug/teacher_student_mean_absdiff"] = jnp.mean(jnp.abs(t_mean - s_mean))
+
+
+        # ----------------------------------------------------------
+        # Distill diagnostics: teacher policy vs student actor KL
+        # (evidence student is NOT cloning teacher behavior)
+        # ----------------------------------------------------------
+        # if self.teacher_policy is not None:
+        #     # Teacher states from teacher_traj (exclude last)
+        #     t_states = {k: teacher_traj[k][:-1] for k in ("deter", "stoch", "logit") if k in teacher_traj}
+        #     T, B = t_states["deter"].shape[:2]
+
+        #     flat = {
+        #         "deter": t_states["deter"].reshape((T * B, -1)),
+        #     }
+        #     if "stoch" in t_states:
+        #         flat["stoch"] = t_states["stoch"].reshape((T * B,) + t_states["stoch"].shape[2:])
+        #     if "logit" in t_states:
+        #         flat["logit"] = t_states["logit"].reshape((T * B,) + t_states["logit"].shape[2:])
+
+        #     # Teacher action distribution on teacher states
+        #     t_outs, _ = self.teacher_policy(flat, None)
+        #     t_dist = t_outs["action"]
+
+        #     # Student action distribution on the same states
+        #     s_dist = self.actor(sg(flat))
+
+        #     t_probs = getattr(t_dist, "probs", None)
+        #     s_probs = getattr(s_dist, "probs", None)
+
+        #     # KL(teacher || student)
+        #     kl_ts = t_dist.kl_divergence(s_dist)  # [(T*B)]
+        #     metrics.update(jaxutils_student.tensorstats(kl_ts, "distill/actor/state_kl"))
+
+        #     # Mode agreement only if probs exist and are arrays
+        #     if self.act_space.discrete and (t_probs is not None) and (s_probs is not None):
+        #         t_mode = jnp.argmax(t_probs, axis=-1)
+        #         s_mode = jnp.argmax(s_probs, axis=-1)
+        #         metrics["distill/actor/action_mode_agree"] = (t_mode == s_mode).mean()
+        #     else:
+        #         # Fallback for continuous distributions or wrappers where probs is None:
+        #         # compare means (or modes) with an L2 metric.
+        #         t_mean = t_dist.mean()
+        #         s_mean = s_dist.mean()
+        #         metrics["distill/actor/mean_l2"] = jnp.linalg.norm(t_mean - s_mean, axis=-1).mean()
+
+            # # Discrete action agreement (mode)
+            # if self.act_space.discrete:
+            #     t_mode = jnp.argmax(t_dist.probs, axis=-1)
+            #     s_mode = jnp.argmax(s_dist.probs, axis=-1)
+            #     metrics["distill/actor/action_mode_agree"] = (t_mode == s_mode).mean()
+
 
         kl_coef = self.config.kl_coef if hasattr(self.config, "kl_coef") else 2.0
 

@@ -1,6 +1,8 @@
 import jax
 import jax.numpy as jnp
 
+from dreamerv3.embodied.core import metrics
+
 tree_map = jax.tree_util.tree_map
 sg = lambda x: tree_map(jax.lax.stop_gradient, x)
 
@@ -19,9 +21,16 @@ logger.addFilter(CheckTypesFilter())
 from . import behaviors_teacher, jaxagent_teacher, jaxutils_teacher, nets_vlm
 from . import ninjax as nj
 
-@jax.custom_vjp
+# @jax.custom_vjp
+# def grad_reverse(x, scale):
+#     return x
+
 def grad_reverse(x, scale):
-    return x
+    # scale can be dynamic (e.g., your DANN schedule); we don't want grads w.r.t. it.
+    scale = jax.lax.stop_gradient(jnp.asarray(scale, dtype=x.dtype))
+    x_sg = jax.lax.stop_gradient(x)
+    # Forward: equals x. Backward: multiplies gradient by -scale.
+    return x_sg - scale * (x - x_sg)
 
 def _gr_fwd(x, scale):
     return x, scale
@@ -29,7 +38,7 @@ def _gr_fwd(x, scale):
 def _gr_bwd(scale, g):
     return (-scale * g, None)
 
-grad_reverse.defvjp(_gr_fwd, _gr_bwd)
+# grad_reverse.defvjp(_gr_fwd, _gr_bwd)
 
 
 
@@ -101,6 +110,7 @@ class Agent(nj.Module):
         if mode == "eval":
             outs = task_outs
             outs["action"] = outs["action"].sample(seed=nj.rng())
+            # outs["action"] = outs["action"].mode()
             outs["log_entropy"] = jnp.zeros(outs["action"].shape[:1])
         elif mode == "explore":
             outs = expl_outs
@@ -179,7 +189,12 @@ class WorldModel(nj.Module):
         self.act_space = act_space["action"]
         self.config = config
         shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
-        shapes = {k: v for k, v in shapes.items() if not k.startswith("log_")}
+        # shapes = {k: v for k, v in shapes.items() if not k.startswith("log_")}
+        shapes = {
+            k: v for k, v in shapes.items()
+            if (not k.startswith("log_")) and (k not in ("domain_id", "domain_mask", "vlm"))
+        }
+
         self.encoder = nets_vlm.MultiEncoder(shapes, **config.encoder, name="enc")
         self.rssm = nets_vlm.RSSM(**config.rssm, name="rssm")
         self.heads = {
@@ -238,316 +253,630 @@ class WorldModel(nj.Module):
                                     inputs=["deter"], dims="deter", name="sty_proj", **common)
 
         for h in self.sem_horizons:
-            self.sem_heads[h] = nets_vlm.MLP(None, layers=2, units=self.vlm_dim,
-                                            inputs=["sem"], dims="sem", name=f"sem_head_h{h}", **common)
-
-        self.domain_head = nets_vlm.MLP((self.num_domains,), layers=2, units=256,
-                                        inputs=["sem"], dims="sem", dist="onehot", name="domain_head", **common)
+            self.sem_heads[h] = nets_vlm.MLP(
+                None, layers=2, units=self.vlm_dim,
+                inputs=["sem", "sty_ctx"], dims="sem",
+                name=f"sem_head_h{h}", **common
+            )
 
         # Style should carry domain info (non-adversarial)
         self.domain_head_sty = nets_vlm.MLP((self.num_domains,), layers=2, units=256,
-                                            inputs=["sty"], dims="sty", dist="onehot",
+                                            inputs=["sty_ctx"], dims="sty_ctx", dist="onehot",
                                             name="domain_head_sty", **common)
  
         self.domain_sty_scale = float(getattr(config, "domain_sty_scale", 1.0))
 
+        self.use_semsty = bool(getattr(config, "use_semsty", True))
+        self.domain_head_input = str(getattr(config, "domain_head_input", "sem"))  # "sem" or "deter"
+
+        # GRL schedule controls
+        self.domain_grl_max = float(getattr(config, "domain_grl_max", getattr(config, "domain_scale", 0.0)))
+        self.domain_grl_schedule = str(getattr(config, "domain_grl_schedule", "dann"))  # "none"|"linear"|"dann"
+
+        self.domain_head = nets_vlm.MLP(
+            (self.num_domains,), layers=2, units=256,
+            inputs=[self.domain_head_input], dims=self.domain_head_input,
+            dist="onehot", name="domain_head", **common
+        )
+
+        common = dict(act="silu", norm="layer")
+
+        self.style_ctx_dim = getattr(config, "sty_ctx_dim", self.sty_dim)
+
+        self.style_ctx_net = nets_vlm.MLP(
+            None,                      # <-- IMPORTANT: no distribution wrapper
+            layers=2,
+            units=self.style_ctx_dim,  # <-- output dim = style_ctx_dim (like sem_proj/sty_proj)
+            inputs=["tensor"],
+            dims="tensor",
+            name="style_ctx_net",
+            **common
+        )
+
+        self.domain_probe = nets_vlm.MLP(
+            (self.num_domains,), layers=2, units=256,
+            inputs=[self.domain_head_input], dims=self.domain_head_input,
+            dist="onehot", name="domain_probe", act="silu", norm="layer"
+        )
+
+    
     def add_semsty(self, state):
-        # state: dict with keys incl 'deter'
-        sem = self.sem_proj(state)  # (..., sem_dim)
-        sty = self.sty_proj(state)  # (..., sty_dim)
+        if not self.use_semsty:
+            return state
+        sem = self.sem_proj(state)
+        sty = self.sty_proj(state)
         return {**state, "sem": sem, "sty": sty}
+    
+    def _compute_sty_ctx(self, embed, is_first):
+        """
+        Build a *causal* style context from encoder embeddings.
+
+        embed:    (B, T, E)
+        is_first: (B, T) or (B, T, 1)  (1 at episode starts)
+
+        Returns:
+        sty_ctx: (B, T, C)
+        """
+        B, T, E = embed.shape
+
+        if is_first.ndim == 3:
+            is_first = is_first[..., 0]
+        is_first = is_first.astype(jnp.bool_)
+
+        # alpha = jnp.array(float(getattr(self.config, "sty_ctx_ema", 0.9)), jnp.float32)
+
+        # # Scan over time with an EMA that resets at episode boundaries.
+        # emb_TBE = jnp.swapaxes(embed, 0, 1)       # (T, B, E)
+        # first_TB = jnp.swapaxes(is_first, 0, 1)   # (T, B)
+
+        # def step(prev, inp):
+        #     e_t, first_t = inp                    # e_t:(B,E), first_t:(B,)
+        #     first_t = first_t.astype(jnp.bool_)
+        #     prev = jnp.where(first_t[:, None], e_t, alpha * prev + (1.0 - alpha) * e_t)
+        #     return prev, prev
+
+        # init = emb_TBE[0]
+        # _, ema_TBE = jax.lax.scan(step, init, (emb_TBE, first_TB))
+
+        dtype = embed.dtype  # IMPORTANT: keeps scan carry dtype consistent (float16 in your run)
+        alpha = jnp.asarray(getattr(self.config, "sty_ctx_ema", 0.9), dtype=dtype)
+        one = jnp.asarray(1.0, dtype=dtype)
+
+        emb_TBE = jnp.swapaxes(embed, 0, 1)       # (T, B, E)
+        first_TB = jnp.swapaxes(is_first, 0, 1)   # (T, B)
+
+        def step(prev, inp):
+            e_t, first_t = inp
+            e_t = e_t.astype(dtype)
+            first_t = first_t.astype(jnp.bool_)
+            prev = jnp.where(
+                first_t[:, None],
+                e_t,
+                alpha * prev + (one - alpha) * e_t,
+            ).astype(dtype)
+            return prev, prev
+
+        init = emb_TBE[0].astype(dtype)
+        _, ema_TBE = jax.lax.scan(step, init, (emb_TBE.astype(dtype), first_TB))
+
+
+
+
+
+        ema_BTE = jnp.swapaxes(ema_TBE, 0, 1)     # (B, T, E)
+
+        # Your MLP expects 2D; flatten time, apply once, then reshape back.
+        ema_flat = ema_BTE.reshape((-1, E))       # (B*T, E)
+        sty_flat = self.style_ctx_net({"tensor": ema_flat})  # (B*T, C)
+        C = sty_flat.shape[-1]
+        return sty_flat.reshape((B, T, C))
 
     def initial(self, batch_size):
         prev_latent = self.rssm.initial(batch_size)
         prev_action = jnp.zeros((batch_size, *self.act_space.shape))
         return prev_latent, prev_action
 
+    # def train(self, data, state):
+    #     modules = [
+    #         self.encoder, self.rssm, *self.heads.values(),
+    #         self.sem_proj, self.sty_proj,
+    #         self.style_ctx_net,              # <-- ADD THIS
+    #         self.domain_head, self.domain_head_sty,
+    #         self.domain_probe,
+    #         *self.sem_heads.values(),
+    #     ]
+
+    #     mets, (state, outs, metrics) = self.opt(modules, self.loss, data, state, has_aux=True)
+    #     metrics.update(mets)
+    #     return state, outs, metrics
+
     def train(self, data, state):
-        # modules = [self.encoder, self.rssm,+  *self.heads.values()]
+        # Always used in loss():
         modules = [
-            self.encoder, self.rssm, *self.heads.values(),
-            self.sem_proj, self.sty_proj, self.domain_head, self.domain_head_sty,
-            *self.sem_heads.values(),
+            self.encoder,
+            self.rssm,
+            *self.heads.values(),
+            self.style_ctx_net,
         ]
+
+        # sem/style projections only exist (and are used) if enabled
+        if self.use_semsty:
+            modules += [self.sem_proj, self.sty_proj]
+
+            # semantic rollout heads only needed if sem_rollout loss is on
+            sem_w = self._get_scale("sem_rollout", 0.0)
+            if sem_w > 0.0:
+                modules += list(self.sem_heads.values())
+
+        # domain heads only needed if corresponding losses/probe are on
+        dom_w   = self._get_scale("domain_adv", 0.0)
+        sty_w   = self._get_scale("domain_sty", 0.0)
+        probe_w = self._get_scale("domain_probe", 0.0)
+
+        if dom_w > 0.0:
+            modules += [self.domain_head]
+        if sty_w > 0.0:
+            modules += [self.domain_head_sty]
+        if probe_w > 0.0:
+            modules += [self.domain_probe]
+
         mets, (state, outs, metrics) = self.opt(modules, self.loss, data, state, has_aux=True)
         metrics.update(mets)
         return state, outs, metrics
 
+    
+    def _get_scale(self, name, default=0.0):
+        obj = self.config.loss_scales
+        return float(obj.get(name, default) if isinstance(obj, dict) else getattr(obj, name, default))
+    
+    def _grl_scale(self, data):
+        maxs = float(self.domain_grl_max)
+        if maxs <= 0.0:
+            return jnp.array(0.0, jnp.float32)
+
+        sched = self.domain_grl_schedule.lower()
+        if sched == "none":
+            return jnp.array(maxs, jnp.float32)
+
+        # Use env_step if available
+        if "env_step" not in data:
+            print("*************************************************************")
+            print("env_step not in data; cannot compute GRL schedule. Using max scale.")
+            print("*************************************************************")
+            return jnp.array(maxs, jnp.float32)
+
+        cur = jnp.mean(data["env_step"].astype(jnp.float32))
+        steps_total = float(getattr(getattr(self.config, "run", self.config), "steps", 1e6))
+        p = jnp.clip(cur / steps_total, 0.0, 1.0)
+
+        if sched == "linear":
+            return maxs * p
+
+        # "dann" schedule
+        return maxs * (2.0 / (1.0 + jnp.exp(-10.0 * p)) - 1.0)
+
     def loss(self, data, state):
+        # ---- Encode + RSSM observe ----
         embed = self.encoder(data)
+
         prev_latent, prev_action = state
 
-        # DEFENSIVE: strip sem/sty if they ever sneak in (e.g., from old checkpoint/state)
-        prev_latent = {k: v for k, v in prev_latent.items() if k not in ("sem", "sty")}
+        # Keep RSSM core only (important for compatibility across configs)
+        prev_latent = {k: v for k, v in prev_latent.items() if k not in ("sem", "sty", "sty_ctx")}
 
         prev_actions = jnp.concatenate([prev_action[:, None], data["action"][:, :-1]], 1)
-
-        # --- core RSSM outputs ---
         post_core, prior_core = self.rssm.observe(embed, prev_actions, data["is_first"], prev_latent)
 
-        # --- augmented views (for actor/critic + aux losses) ---
-        post = self.add_semsty(post_core)
-        prior = self.add_semsty(prior_core)
-        # post, prior = self.rssm.observe(embed, prev_actions, data["is_first"], prev_latent)
-        # # Attach sem/sty to posterior and prior
-        # post = self.add_semsty(post)
+        B, T = data["action"].shape[:2]
+        zeros_bt = jnp.zeros((B, T), jnp.float32)
+        nan = jnp.array(jnp.nan, jnp.float32)
 
-        # # domain_id should be one-hot for the head if you use dist="onehot"
-        # dom = data["domain_id"].astype(jnp.int32)  # (B,T)
-        # dom_oh = jax.nn.one_hot(dom, self.num_domains)  # (B,T,num_domains)
+        # ---- Scales / feature toggles ----
+        sem_w = self._get_scale("sem_rollout", 0.0)
+        dom_w = self._get_scale("domain_adv", 0.0)
+        sty_w = self._get_scale("domain_sty", 0.0)
+        probe_w = self._get_scale("domain_probe", 0.0)
 
-        # sem_gr = grad_reverse(post["sem"], self.domain_scale)  # reverse gradient into sem
-        # dom_dist = self.domain_head({"sem": sem_gr})
-        # dom_loss = -dom_dist.log_prob(dom_oh).mean()  # scalar
-        # losses["domain_adv"] = dom_loss
+        need_domain = (dom_w > 0.0) or (sty_w > 0.0) or (probe_w > 0.0)
+        need_vlm = (sem_w > 0.0)
 
-        dom = data["domain_id"]                    # (B,T,1) in your setup
-        if dom.ndim == 3:
-            dom = dom[..., 0]                     # -> (B,T)
+        # For sem rollout you also need sem/sty enabled and vlm present in data
+        use_sem = bool(self.use_semsty and need_vlm)
+        use_sty = bool(self.use_semsty and (sty_w > 0.0))
 
-        # domain_id is float32 (from preprocess), so round+clip before int
-        dom = jnp.clip(jnp.round(dom), 0, self.num_domains - 1).astype(jnp.int32)
-
-        dom_oh = jax.nn.one_hot(dom, self.num_domains)   # (B,T,num_domains)
-
-        sem_gr = grad_reverse(post["sem"], self.domain_scale)# --- GRL schedule (0 -> domain_scale) ---
-        # Use env_step from the batch as a proxy for training progress.
-        # steps_total = float(getattr(self.config.run, "steps", 1e5))  # ensure this exists
-        # print("*****************")
-        # print(data.keys())
-        # cur = jnp.mean(data["env_step"].astype(jnp.float32))
-        # p = jnp.clip(cur / steps_total, 0.0, 1.0)
-
-        # # DANN schedule: lambda(p) = 2/(1+exp(-10p)) - 1
-        # grl = self.domain_scale * (2.0 / (1.0 + jnp.exp(-10.0 * p)) - 1.0)
-
-        # sem_gr = grad_reverse(post["sem"], grl)
-        dom_dist = self.domain_head({"sem": sem_gr})
-        dom_loss = -dom_dist.log_prob(dom_oh).mean()
-
-        # Encourage style to be domain-predictive (no gradient reversal)
-        dom_dist_sty = self.domain_head_sty({"sty": post["sty"]})
-        dom_loss_sty = -dom_dist_sty.log_prob(dom_oh).mean()
-
-        dom_nll = -dom_dist.log_prob(dom_oh)           # (B,T)
-        dom_nll_sty = -dom_dist_sty.log_prob(dom_oh)  # (B,T)
-
-        # ---- Domain diagnostics (accuracy + entropy) ----
-        # dom: (B,T) int32 labels
-        # dom_dist: OneHotDist over num_domains with batch shape (B,T)
-
-        # Some custom OneHot distributions in this repo expose probs=None.
-        # mean() is always well-defined and equals probs for one-hot categorical.
-        dom_probs = dom_dist.mean()  # (B,T,num_domains)
-
+        if need_vlm and ("vlm" not in data):
+            raise KeyError(
+                "[CONFIG/ENV BUG] sem_rollout > 0 but 'vlm' is missing from the batch. "
+                "Either include 'vlm' in the env observation or set loss_scales.sem_rollout=0."
+            )
         
+        if need_domain and ("domain_id" not in data):
+            raise KeyError(
+                "[CONFIG/ENV BUG] domain losses/probe enabled but 'domain_id' is missing from the batch. "
+                "Either include 'domain_id' in the env observation or set domain_adv/domain_sty/domain_probe scales to 0."
+            )
+       
+        # ---- Add sem/sty features if enabled ----
+        post = self.add_semsty(post_core) if self.use_semsty else post_core 
+        prior = self.add_semsty(prior_core) if self.use_semsty else prior_core
 
-        # Predicted domain id
-        dom_pred = jnp.argmax(dom_probs, axis=-1).astype(jnp.int32)  # (B,T)
+        # ---- Style context (decoder/reward/cont in your config require sty_ctx) ----
+        # sty_ctx0 = self.style_ctx_net({"tensor": embed[:, 5]})                                         # (B, C)
+        # sty_ctx  = jnp.repeat(sty_ctx0[:, None, :], T, axis=1)                                         # (B, T, C)
+        # post  = {**post,  "sty_ctx": sty_ctx}
+        # prior = {**prior, "sty_ctx": sty_ctx}
 
+        # ---- Style context (CAUSAL; no future leakage) ----
+        sty_ctx = self._compute_sty_ctx(embed, data["is_first"])   # (B, T, C)
+        post  = {**post,  "sty_ctx": sty_ctx}
+        prior = {**prior, "sty_ctx": sty_ctx}
 
+        losses = {}
 
-        # Accuracy (higher = more domain leakage in sem)
-        dom_acc = (dom_pred == dom).astype(jnp.float32).mean()
+        # ---- Domain adversarial/probe/sty losses ----
+        losses["domain_adv"] = zeros_bt
+        losses["domain_probe"] = zeros_bt
+        losses["domain_sty"] = zeros_bt
 
-        # Entropy (higher = more confused / invariant)
-        # Use dist.entropy() rather than recomputing from probs.
-        dom_ent = dom_dist.entropy().mean()
+        # Placeholders for metrics (so we never reference undefined vars)
+        dom = None
+        dom_oh = None
+        dom_dist = None
+        probe_dist = None
+        dom_dist_sty = None
+        grl = jnp.array(0.0, jnp.float32)
 
-        dom_chance = 1.0 / float(self.num_domains)
+        if need_domain:
+            dom = data["domain_id"]                                                                         # (B,T)
+            if dom.ndim == 3:
+                dom = dom[..., 0]                                                                           # -> (B,T)
 
-        # --- NEW: batch label / prediction balance diagnostics ---
-        # dom_flat  = dom.reshape(-1)         # (B*T,)
-        # pred_flat = dom_pred.reshape(-1)    # (B*T,)
+            dom = jnp.clip(jnp.round(dom), 0, self.num_domains - 1).astype(jnp.int32)
+            dom_oh = jax.nn.one_hot(dom, self.num_domains)   
 
-        # dom_hist  = jnp.bincount(dom_flat,  minlength=self.num_domains).astype(jnp.float32)
-        # pred_hist = jnp.bincount(pred_flat, minlength=self.num_domains).astype(jnp.float32)
-
-        # den = jnp.maximum(dom_flat.size, 1)
-        # dom_frac  = dom_hist / den
-        # pred_frac = pred_hist / den
-
-        # --- NEW: batch label / prediction balance diagnostics ---
-        # dom_flat  = dom.reshape(-1)         # (B*T,)
-        # pred_flat = dom_pred.reshape(-1)    # (B*T,)
-
-        # dom_hist  = jnp.bincount(dom_flat,  minlength=self.num_domains).astype(jnp.float32)
-        # pred_hist = jnp.bincount(pred_flat, minlength=self.num_domains).astype(jnp.float32)
-
-        # den = jnp.maximum(dom_flat.size, 1)
-        # dom_frac  = dom_hist / den
-        # pred_frac = pred_hist / den
-
-        # --- NEW: batch label / prediction balance diagnostics (JIT-safe) ---
-        num_dom = int(self.num_domains)
-
-        dom_oh  = jax.nn.one_hot(dom, num_dom).astype(jnp.float32)       # (B,T,K)
-        pred_oh = jax.nn.one_hot(dom_pred, num_dom).astype(jnp.float32)  # (B,T,K)
-
-        # Fractions per class in the current batch
-        dom_frac  = dom_oh.mean(axis=(0, 1))    # (K,)
-        pred_frac = pred_oh.mean(axis=(0, 1))   # (K,)
-
-        # Majority baseline (best constant predictor for this batch)
-        dom_majority = dom_frac.max()
-
-
-
-        # dom_majority = dom_frac.max()
-
-        # Class frequencies in the current batch (B,T)
-        # dom_freq = jnp.mean(jax.nn.one_hot(dom, self.num_domains).astype(jnp.float32), axis=(0, 1))
-        # dom_majority = jnp.max(dom_freq)
-
-        # Helpful “how much above baseline” signals
-        dom_acc_minus_chance = dom_acc - dom_chance
-        dom_acc_minus_majority = dom_acc - dom_majority
+            domain_mask = data.get("domain_mask", None)
+            if domain_mask is None:
+                domain_mask = jnp.ones_like(dom, dtype=jnp.float32)
+            else:
+                if domain_mask.ndim == 3:
+                    domain_mask = domain_mask[..., 0]
+                domain_mask = domain_mask.astype(jnp.float32)  # (B, T)
 
 
+            if self.domain_head_input not in post:
+                raise KeyError(
+                    f"[CONFIG BUG] domain_head_input='{self.domain_head_input}' is not in post-state keys. "
+                    f"Available keys: {tuple(post.keys())}. "
+                    "If use_semsty=False, you almost certainly want --dreamerv3.domain_head_input deter."
+                )   
 
-        # Save to metrics
-        # (These will appear as train/domain_acc, eval/domain_acc, etc via your logging prefixes.)
-        # Put them either in `losses` or directly in `metrics` later—direct metrics is simplest.
+            feat = post[self.domain_head_input]                                                             # (B,T,dim)
+
+             # Adversarial head
+            if dom_w > 0.0:
+                grl = self._grl_scale(data)
+                feat_gr = grad_reverse(feat, grl)
+                dom_dist = self.domain_head({self.domain_head_input: feat_gr})
+                dom_nll = -dom_dist.log_prob(dom_oh)  
+                # losses["domain_adv"] = dom_nll    
+                losses["domain_adv"] = dom_nll * domain_mask                                                          # (B,T)
+
+            # Probe head (non-adversarial, stop-grad into representation)
+            if probe_w > 0.0:
+                feat_sg = sg(feat)                                                                          # stop gradient to SEM features
+                probe_dist = self.domain_probe({self.domain_head_input: feat_sg})
+                probe_nll  = -probe_dist.log_prob(dom_oh)                                                   # (B,T)
+                # losses["domain_probe"] = probe_nll
+                losses["domain_probe"] = probe_nll * domain_mask
+
+            # Style domain head (uses sty_ctx)
+            if sty_w > 0.0:
+                dom_dist_sty = self.domain_head_sty({"sty_ctx": post["sty_ctx"]})
+                # losses["domain_sty"] = -dom_dist_sty.log_prob(dom_oh)
+                losses["domain_sty"] = -dom_dist_sty.log_prob(dom_oh) * domain_mask
 
 
-
-        prior = self.add_semsty(prior)
+        # ---- World model reconstruction + dynamics losses ----        
         dists = {}
         feats = {**post, "embed": embed}
         for name, head in self.heads.items():
             out = head(feats if name in self.config.grad_heads else sg(feats))
             out = out if isinstance(out, dict) else {name: out}
             dists.update(out)
-        losses = {}
-        # losses["domain_adv"] = dom_loss
-        # losses["domain_sty"] = dom_loss_sty
-        losses["domain_adv"] = dom_nll
-        losses["domain_sty"] = dom_nll_sty
+        
+        
         losses["dyn"] = self.rssm.dyn_loss(post, prior, **self.config.dyn_loss)
         losses["rep"] = self.rssm.rep_loss(post, prior, **self.config.rep_loss)
         for key, dist in dists.items():
             loss = -dist.log_prob(data[key].astype(jnp.float32))
             assert loss.shape == embed.shape[:2], (key, loss.shape)
             losses[key] = loss
-        # scaled = {k: v * self.scales[k] for k, v in losses.items()}
 
-        def _l2_normalize(x, eps=1e-6):
-            return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + eps)
+        # ---- Semantic rollout loss (optional) ----
+        sem_loss = jnp.array(0.0, jnp.float32)
+        losses["sem_rollout"] = sem_loss
 
-        def _cos_dist(a, b):
-            a = _l2_normalize(a)
-            b = _l2_normalize(b)
-            return 1.0 - jnp.sum(a * b, axis=-1)
+        if use_sem:
+            H = int(max(self.sem_horizons))
+            valid_T = T - H
+            if valid_T > 0:      
+                def _l2_normalize(x, eps=1e-6):
+                    return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + eps)
 
-        # Multi-horizon open-loop rollout from each time t using future actions.
-        # We roll out up to max horizon H from posterior states.
-        H = int(max(self.sem_horizons))
-        B, T = data["action"].shape[:2]
-        valid_T = T - H
-        sem_loss = 0.0
+                def _cos_dist(a, b):
+                    a = _l2_normalize(a)
+                    b = _l2_normalize(b)
+                    return 1.0 - jnp.sum(a * b, axis=-1)
 
-        if valid_T > 0:
+                is_first = data["is_first"]
+                if is_first.ndim == 3:
+                    is_first = is_first[..., 0]
+                is_first = is_first.astype(jnp.int32)
+                csum_first = jnp.cumsum(is_first, axis=1)
 
-            # ---- episode boundary mask prep ----
-            is_first = data["is_first"]
-            if is_first.ndim == 3:
-                is_first = is_first[..., 0]
-            is_first = is_first.astype(jnp.int32)          # (B,T)
-            csum_first = jnp.cumsum(is_first, axis=1)      # (B,T)
+                start = {k: v[:, :valid_T] for k, v in post.items()
+                        if k in ("deter","stoch","logit","mean","std","sem","sty","sty_ctx")}
+                start = tree_map(lambda x: x.reshape([-1] + list(x.shape[2:])), start)
 
-            # Start states: post at times [0..valid_T-1]
-            start = {k: v[:, :valid_T] for k, v in post.items() if k in ("deter","stoch","logit","mean","std","sem","sty")}
-            start = tree_map(lambda x: x.reshape([-1] + list(x.shape[2:])), start)  # (B*valid_T, ...)
+                acts = jnp.stack([data["action"][:, i:i+valid_T] for i in range(H)], axis=0)
+                acts = acts.reshape([H, -1] + list(data["action"].shape[2:]))
 
-            # Build action sequences of length H for each start time
-            # acts[h] corresponds to action at time t+h for each t in [0..valid_T-1]
-            acts = jnp.stack([data["action"][:, i:i+valid_T] for i in range(H)], axis=0)  # (H,B,valid_T,Adim)
-            acts = acts.reshape([H, -1] + list(data["action"].shape[2:]))               # (H,B*valid_T,Adim)
+                rssm_keys = set(self.rssm.initial(1).keys())
 
-            # def scan_step(s, a):
-            #     s2 = self.rssm.img_step(s, a)
-            #     s2 = self.add_semsty(s2)
-            #     return s2, s2
+                def scan_step(s, a):
+                    sty_ctx_local = s.get("sty_ctx", None)
+                    s_core = {k: s[k] for k in rssm_keys}
+                    s2 = self.rssm.img_step(s_core, a)
+                    s2 = self.add_semsty(s2) if self.use_semsty else s2
+                    if sty_ctx_local is not None:
+                        s2 = {**s2, "sty_ctx": sty_ctx_local}
+                    return s2
 
-            # # lax.scan over horizon; returns states for steps 1..H
-            # _, seq = jax.lax.scan(scan_step, start, acts)  # seq: dict with (H, B*valid_T, ...)
-
-            def scan_step(s, a):
-                s2 = self.rssm.img_step(s, a)
-                s2 = self.add_semsty(s2)
-                return s2
-
-            # jaxutils_teacher.scan is used elsewhere in your repo specifically to avoid ninjax RNG leaks
             seq = jaxutils_teacher.scan(
-                scan_step,
-                acts,                 # shape (H, B*valid_T, act_dim)
-                start,                # dict, shape (B*valid_T, ...)
+                scan_step, acts, start,
                 self.config.imag_unroll if hasattr(self.config, "imag_unroll") else 1,
             )
 
+            sem_loss_accum = jnp.array(0.0, jnp.float32)
 
-            # Targets: VLM embeddings at time t+h
-            # data["vlm"]: (B,T,D) -> slice to (B, valid_T, D) aligned with future indices
             for h in self.sem_horizons:
-                pred_state_h = tree_map(lambda x: x[h-1], seq)  # (B*valid_T,...)
-                pred_vlm = self.sem_heads[h]({"sem": pred_state_h["sem"]})  # (B*valid_T, D)
-                tgt = data["vlm"][:, h:h+valid_T]                             # (B, valid_T, D)
-                tgt = tgt.reshape([-1, tgt.shape[-1]])                        # (B*valid_T, D)
-                # sem_loss = sem_loss + _cos_dist(pred_vlm, tgt).mean()+               
-                # ---- mask out pairs that cross an episode reset in (t, t+h] ----
-                # interval_count[t] = sum(is_first[t+1 ... t+h])
-                interval = csum_first[:, h:h+valid_T] - csum_first[:, :valid_T]   # (B,valid_T)
-                mask = (interval == 0).astype(jnp.float32).reshape([-1])          # (B*valid_T,)
- 
-                dist = _cos_dist(pred_vlm, tgt)                                   # (B*valid_T,)
-                sem_loss = sem_loss + (dist * mask).sum() / (mask.sum() + 1e-6)
+                pred_state_h = tree_map(lambda x: x[h-1], seq)
+                pred_vlm = self.sem_heads[h]({"sem": pred_state_h["sem"], 
+                                              "sty_ctx": pred_state_h["sty_ctx"]})
+                tgt = data["vlm"][:, h:h+valid_T].reshape([-1, data["vlm"].shape[-1]])
+                interval = csum_first[:, h:h+valid_T] - csum_first[:, :valid_T]
+                roll_mask = (interval == 0).astype(jnp.float32).reshape([-1])
+                dist = _cos_dist(pred_vlm, tgt)
+                sem_loss_accum = sem_loss_accum + (dist * roll_mask).sum() / (roll_mask.sum() + 1e-6) 
 
-        losses["sem_rollout"] = sem_loss
+            # sem_loss = sem_loss_accum
+            # sem_loss = sem_loss_accum / float(len(self.sem_horizons))
+            num_h = float(len(self.sem_horizons))
+            sem_loss = sem_loss_accum / max(num_h, 1.0)
 
-        # scaled = {k: v * self.scales[k] for k, v in losses.items() if k in self.scales}
-        # model_loss = sum(scaled.values()) + self.sem_scale * losses["sem_rollout"]
+            losses["sem_rollout"] = sem_loss
 
+        # ---- Total loss ----
         scaled = {k: v * self.scales[k] for k, v in losses.items() if k in self.scales}
         model_loss = sum(scaled.values())
 
-
-        # model_loss = sum(scaled.values())
+        # ---- Outputs + next state (RSSM core only) ----
         out = {"embed": embed, "post": post, "prior": prior}
         out.update({f"{k}_loss": v for k, v in losses.items()})
-        last_latent = {k: v[:, -1] for k, v in post.items()}
+
+        rssm_keys = set(self.rssm.initial(1).keys())
+        last_latent = {k: v[:, -1] for k, v in post.items() if k in rssm_keys}
         last_action = data["action"][:, -1]
         state = last_latent, last_action
+
+        # ---- Metrics ----
         metrics = self._metrics(data, dists, post, prior, losses, model_loss)
-        metrics["sem_rollout"] = losses["sem_rollout"]
+
+        # Keep your expected scalar names
+        metrics["model_loss_raw"] = model_loss  
+        metrics["sem_rollout"] = sem_loss
+
         metrics["domain_adv_scale"] = self.domain_adv_scale
-        metrics["domain_adv_loss"] = losses["domain_adv"].mean()
-        metrics["domain_acc"] = dom_acc
-        metrics["domain_entropy"] = dom_ent
-        metrics["model_loss_raw"] = model_loss  # Store model loss for Curious Replay prioritization
-        metrics["domain_chance_acc"] = dom_chance
-        metrics["domain_majority_acc"] = dom_majority
-        metrics["domain_acc_minus_chance"] = dom_acc_minus_chance
-        metrics["domain_acc_minus_majority"] = dom_acc_minus_majority
-        metrics["domain_adv_loss"] = dom_nll.mean()
-        metrics["domain_sty_loss"] = dom_nll_sty.mean()
+        metrics["domain_grl_scale"] = grl
 
-        sty_probs = dom_dist_sty.mean()
-        sty_pred  = jnp.argmax(sty_probs, axis=-1).astype(jnp.int32)
-        metrics["sty_domain_acc"] = (sty_pred == dom).astype(jnp.float32).mean()
+        # Default domain metrics to NaN (so baselines without domain loss don't crash)
+        metrics.setdefault("domain_acc", nan)
+        metrics.setdefault("domain_entropy", nan)
+        metrics.setdefault("domain_chance_acc", nan)
+        metrics.setdefault("domain_majority_acc", nan)
+        metrics.setdefault("domain_acc_minus_chance", nan)
+        metrics.setdefault("domain_acc_minus_majority", nan)
+        metrics.setdefault("domain_present_K", nan)
+        metrics.setdefault("domain_chance_acc_present", nan)
+        metrics.setdefault("domain_acc_minus_chance_present", nan)
+        metrics.setdefault("domain_soft_acc", nan)
+        metrics.setdefault("domain_nll_prior", nan)
+        metrics.setdefault("domain_nll_model", nan)
+        metrics.setdefault("domain_nll_gain", nan)
+        metrics.setdefault("domain_probe_acc", nan)
+        metrics.setdefault("domain_probe_entropy", nan)
+        metrics.setdefault("domain_probe_soft_acc", nan)
+        metrics.setdefault("sty_domain_acc", nan)
 
-        # --- NEW: store balance diagnostics as scalars ---
-        metrics["dom_majority_baseline"] = dom_majority
-        for i in range(self.num_domains):
-            metrics[f"dom_label_frac_{i}"] = dom_frac[i]
-            metrics[f"dom_pred_frac_{i}"]  = pred_frac[i]
+        # Per-class defaults
+        for i in range(int(self.num_domains)):
+            metrics.setdefault(f"dom_label_frac_{i}", nan)
+            metrics.setdefault(f"dom_pred_frac_{i}", nan)
+            metrics.setdefault(f"dom_predprob_frac_{i}", nan)
+            metrics.setdefault(f"domain_recall_{i}", nan)
+            metrics.setdefault(f"sty_domain_recall_{i}", nan)
+            metrics.setdefault(f"domain_frac_{i}", nan)
 
-        # ---- Per-class diagnostics: recall + class fractions ----
-        for k in range(self.num_domains):
-            mask = (dom == k)
-            denom = mask.astype(jnp.float32).sum() + 1e-6
-            metrics[f"domain_recall_{k}"] = ((dom_pred == k) & mask).astype(jnp.float32).sum() / denom
-            metrics[f"sty_domain_recall_{k}"] = ((sty_pred == k) & mask).astype(jnp.float32).sum() / denom
-            metrics[f"domain_frac_{k}"] = mask.astype(jnp.float32).mean()
+        # Fill domain metrics only if the corresponding head exists
+        # if dom_dist is not None:
+        #     dom_probs = dom_dist.mean()                                                                     # (B,T,num_domains)
+        #     dom_pred = jnp.argmax(dom_probs, axis=-1).astype(jnp.int32)                                     # (B,T)
+            
+        #     dom_acc = (dom_pred == dom).astype(jnp.float32).mean()
+        #     dom_ent = dom_dist.entropy().mean()
+        #     dom_chance = 1.0 / float(self.num_domains)
+
+        #     num_dom = int(self.num_domains)
+
+        #     dom_oh_f = dom_oh.astype(jnp.float32)                                     # (B,T,K)
+        #     pred_oh = jax.nn.one_hot(dom_pred, num_dom).astype(jnp.float32)                                 # (B,T,K)
+
+        #     dom_soft_acc = (dom_probs * dom_oh_f).sum(axis=-1).mean()  # in [0,1], chance≈0.25
+        #     dom_frac  = dom_oh_f.mean(axis=(0, 1))                                                            # (K,)
+        #     pred_frac = pred_oh.mean(axis=(0, 1))                                                           # (K,)
+
+        #     dom_majority = dom_frac.max()
+        #     dom_acc_minus_chance = dom_acc - dom_chance
+        #     dom_acc_minus_majority = dom_acc - dom_majority
+
+        #     present = (dom_frac > 1e-6).astype(jnp.float32)
+        #     K_present = jnp.maximum(present.sum(), 1.0)
+        #     dom_chance_present = 1.0 / K_present
+        
+        #     label_prior = jax.lax.stop_gradient(dom_frac) + 1e-6
+        #     nll_prior = -jnp.log(jnp.take(label_prior, dom))   # (B,T)
+        #     nll_model = -dom_dist.log_prob(dom_oh) 
+        
+        #     metrics["domain_acc"] = dom_acc
+        #     metrics["domain_entropy"] = dom_ent
+        #     metrics["domain_chance_acc"] = jnp.array(dom_chance, jnp.float32)
+        #     metrics["domain_majority_acc"] = dom_majority
+        #     metrics["domain_acc_minus_chance"] = dom_acc_minus_chance
+        #     metrics["domain_acc_minus_majority"] = dom_acc_minus_majority
+        #     metrics["domain_adv_loss"] = dom_nll.mean()
+        #     metrics["domain_present_K"] = K_present
+        #     metrics["domain_chance_acc_present"] = dom_chance_present
+        #     metrics["domain_acc_minus_chance_present"] = dom_acc - dom_chance_present
+        #     metrics["domain_soft_acc"] = dom_soft_acc
+        #     metrics["domain_nll_prior"] = nll_prior.mean()
+        #     metrics["domain_nll_model"] = nll_model.mean()
+        #     metrics["domain_nll_gain"]  = (nll_prior - nll_model).mean()
+        #     metrics["domain_probe_acc"] = (jnp.argmax(probe_dist.mean(), -1) == dom).mean()
+        #     metrics["domain_probe_entropy"] = probe_dist.entropy().mean()
+        #     metrics["domain_probe_soft_acc"] = (probe_dist.mean() * dom_oh).sum(-1).mean()
+
+        #     predprob_frac = dom_probs.mean(axis=(0, 1))
+
+        #     for i in range(int(self.num_domains)):
+        #         metrics[f"dom_label_frac_{i}"] = dom_frac[i]
+        #         metrics[f"dom_pred_frac_{i}"] = pred_frac[i]
+        #         metrics[f"dom_predprob_frac_{i}"] = predprob_frac[i]
+
+        #         mask = (dom == i)
+        #         denom = mask.astype(jnp.float32).sum() + 1e-6
+        #         metrics[f"domain_recall_{i}"] = ((dom_pred == i) & mask).astype(jnp.float32).sum() / denom
+        #         metrics[f"domain_frac_{i}"] = mask.astype(jnp.float32).mean()
+
+        if dom_dist is not None:
+            mask_f = domain_mask.astype(jnp.float32)                       # (B,T)
+            mask_sum = mask_f.sum()
+            valid = mask_sum > 0.5                                  # True only if any supervised domains exist
+
+            def mmean(x_bt):
+                return (x_bt * mask_f).sum() / (mask_sum + 1e-6)
+
+            dom_probs = dom_dist.mean()                             # (B,T,K)
+            dom_pred  = jnp.argmax(dom_probs, axis=-1).astype(jnp.int32)
+
+            dom_oh_f  = dom_oh.astype(jnp.float32)                  # (B,T,K)
+            pred_oh   = jax.nn.one_hot(dom_pred, int(self.num_domains)).astype(jnp.float32)
+
+            dom_acc   = mmean((dom_pred == dom).astype(jnp.float32))
+            dom_ent   = mmean(dom_dist.entropy())
+            dom_soft  = mmean((dom_probs * dom_oh_f).sum(axis=-1))   # expected prob of true class
+
+            dom_frac  = (dom_oh_f * mask_f[..., None]).sum(axis=(0, 1)) / (mask_sum + 1e-6)
+            pred_frac = (pred_oh  * mask_f[..., None]).sum(axis=(0, 1)) / (mask_sum + 1e-6)
+            predprob_frac = (dom_probs * mask_f[..., None]).sum(axis=(0, 1)) / (mask_sum + 1e-6)
+
+            dom_chance = 1.0 / float(self.num_domains)
+            dom_majority = dom_frac.max()
+
+            present = (dom_frac > 1e-6).astype(jnp.float32)
+            K_present = jnp.maximum(present.sum(), 1.0)
+            dom_chance_present = 1.0 / K_present
+
+            label_prior = jax.lax.stop_gradient(dom_frac) + 1e-6
+            nll_prior = -jnp.log(jnp.take(label_prior, dom))         # (B,T)
+            nll_model = -dom_dist.log_prob(dom_oh)                   # (B,T)
+
+            # Masked means
+            nll_prior_m = mmean(nll_prior)
+            nll_model_m = mmean(nll_model)
+
+            metrics["domain_acc"] = jnp.where(valid, dom_acc, nan)
+            metrics["domain_entropy"] = jnp.where(valid, dom_ent, nan)
+            metrics["domain_chance_acc"] = jnp.where(valid, jnp.array(dom_chance, jnp.float32), nan)
+            metrics["domain_majority_acc"] = jnp.where(valid, dom_majority, nan)
+            metrics["domain_acc_minus_chance"] = jnp.where(valid, dom_acc - dom_chance, nan)
+            metrics["domain_acc_minus_majority"] = jnp.where(valid, dom_acc - dom_majority, nan)
+            metrics["domain_present_K"] = jnp.where(valid, K_present, nan)
+            metrics["domain_chance_acc_present"] = jnp.where(valid, dom_chance_present, nan)
+            metrics["domain_acc_minus_chance_present"] = jnp.where(valid, dom_acc - dom_chance_present, nan)
+            metrics["domain_soft_acc"] = jnp.where(valid, dom_soft, nan)
+
+            metrics["domain_nll_prior"] = jnp.where(valid, nll_prior_m, nan)
+            metrics["domain_nll_model"] = jnp.where(valid, nll_model_m, nan)
+            metrics["domain_nll_gain"]  = jnp.where(valid, nll_prior_m - nll_model_m, nan)
+
+            # If you want a masked loss number for logging
+            metrics["domain_adv_loss"] = jnp.where(valid, mmean(dom_nll), nan)
+
+            for i in range(int(self.num_domains)):
+                metrics[f"dom_label_frac_{i}"] = jnp.where(valid, dom_frac[i], nan)
+                metrics[f"dom_pred_frac_{i}"] = jnp.where(valid, pred_frac[i], nan)
+                metrics[f"dom_predprob_frac_{i}"] = jnp.where(valid, predprob_frac[i], nan)
+
+                label_mask = ((dom == i).astype(jnp.float32) * mask_f)
+                denom = label_mask.sum()
+                recall = ((dom_pred == i).astype(jnp.float32) * label_mask).sum() / (denom + 1e-6)
+
+                metrics[f"domain_recall_{i}"] = jnp.where(denom > 0.5, recall, nan)
+                metrics[f"domain_frac_{i}"] = jnp.where(valid, denom / (mask_sum + 1e-6), nan)
+
+
+        if probe_dist is not None:
+            probe_probs = probe_dist.mean()
+            probe_pred = jnp.argmax(probe_probs, axis=-1).astype(jnp.int32)
+            metrics["domain_probe_acc"] = (probe_pred == dom).astype(jnp.float32).mean()
+            metrics["domain_probe_entropy"] = probe_dist.entropy().mean()
+            metrics["domain_probe_soft_acc"] = (probe_probs * dom_oh.astype(jnp.float32)).sum(-1).mean()
+
+        # if dom_dist_sty is not None:
+        #     sty_probs = dom_dist_sty.mean()
+        #     sty_pred = jnp.argmax(sty_probs, axis=-1).astype(jnp.int32)
+        #     metrics["sty_domain_acc"] = (sty_pred == dom).astype(jnp.float32).mean()
+
+        #     for i in range(int(self.num_domains)):
+        #         mask = (dom == i)
+        #         denom = mask.astype(jnp.float32).sum() + 1e-6
+        #         metrics[f"sty_domain_recall_{i}"] = ((sty_pred == i) & mask).astype(jnp.float32).sum() / denom
+
+        if dom_dist_sty is not None:
+            # Rebuild masked averaging utils here (do NOT assume dom_dist block ran)
+            mask_f = domain_mask.astype(jnp.float32)            # (B,T) domain_mask (1 for supervised domains, 0 otherwise)
+            mask_sum = mask_f.sum()
+            valid = mask_sum > 0.5                       # only compute metrics if any supervised samples exist
+
+            def mmean(x_bt):
+                # masked mean over (B,T)
+                return (x_bt * mask_f).sum() / (mask_sum + 1e-6)
+
+            sty_probs = dom_dist_sty.mean()              # (B,T,K)
+            sty_pred = jnp.argmax(sty_probs, axis=-1).astype(jnp.int32)
+
+            # Masked accuracy
+            sty_acc = mmean((sty_pred == dom).astype(jnp.float32))
+            metrics["sty_domain_acc"] = jnp.where(valid, sty_acc, nan)
+
+            # Masked per-class recall
+            for i in range(int(self.num_domains)):
+                # only count timesteps where (domain==i) AND supervised (mask_f==1)
+                label_mask = (dom == i).astype(jnp.float32) * mask_f     # (B,T)
+                denom = label_mask.sum()
+
+                recall = ((sty_pred == i).astype(jnp.float32) * label_mask).sum() / (denom + 1e-6)
+                metrics[f"sty_domain_recall_{i}"] = jnp.where(denom > 0.5, recall, nan)
 
 
 
@@ -555,51 +884,89 @@ class WorldModel(nj.Module):
 
     def imagine(self, policy, start, horizon):
         first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
-        keys = list(self.rssm.initial(1).keys())
-        # start = {k: v for k, v in start.items() if k in keys}
-        # start["action"] = policy(start)
 
-        start = {k: v for k, v in start.items() if k in keys}
-        start = self.add_semsty(start)
-        start["action"] = policy(start)
+        rssm_keys = set(self.rssm.initial(1).keys())
+
+        # ✅ Preserve optional style context (it exists when sty_w > 0 and you attached it in loss()).
+        sty_ctx0 = start.get("sty_ctx", None)  # shape (N, C) where N = B*T after flattening
+
+        # ✅ Only the RSSM core state goes into img_step/observe.
+        start_core = {k: v for k, v in start.items() if k in rssm_keys}
+
+        # Add sem/sty features for the actor/critic inputs.
+        start_feat = self.add_semsty(start_core)
+
+        # ✅ Re-attach style context so heads that require it (e.g., cont) can read it.
+        if sty_ctx0 is not None:
+            start_feat = {**start_feat, "sty_ctx": sty_ctx0}
+
+        # Sample action from policy using features (sem, etc.)
+        start_feat = {**start_feat, "action": policy(start_feat)}
 
         def step(prev, _):
-            prev = prev.copy()
-            # state = self.rssm.img_step(prev, prev.pop("action"))
-            # return {**state, "action": policy(state)}
-        
-            state = self.rssm.img_step(prev, prev.pop("action"))
-            state = self.add_semsty(state)
+            # prev contains RSSM core + sem/sty (+ maybe sty_ctx) + action
+            sty_ctx = prev.get("sty_ctx", None)
+            action = prev["action"]
+
+            # ✅ Feed only RSSM core into img_step (no sem/sty/sty_ctx/action).
+            prev_core = {k: prev[k] for k in rssm_keys}
+            state_core = self.rssm.img_step(prev_core, action)
+
+            # Add sem/sty again for downstream modules
+            state = self.add_semsty(state_core)
+
+            # ✅ Carry style context forward unchanged
+            if sty_ctx is not None:
+                state = {**state, "sty_ctx": sty_ctx}
+
             return {**state, "action": policy(state)}
 
+        traj = jaxutils_teacher.scan(step, jnp.arange(horizon), start_feat, self.config.imag_unroll)
+        traj = {k: jnp.concatenate([start_feat[k][None], v], 0) for k, v in traj.items()}
 
-        traj = jaxutils_teacher.scan(step, jnp.arange(horizon), start, self.config.imag_unroll)
-        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
         cont = self.heads["cont"](traj).mode()
         traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
+
         discount = 1 - 1 / self.config.horizon
         traj["weight"] = jnp.cumprod(discount * traj["cont"], 0) / discount
         return traj
 
     def imagine_carry(self, policy, start, horizon, carry):
         first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
-        keys = list(self.rssm.initial(1).keys())
-        start = {k: v for k, v in start.items() if k in keys}
-        outs, carry = policy(start, carry)
-        start["action"] = outs
-        start["carry"] = carry
+
+        rssm_keys = set(self.rssm.initial(1).keys())
+        sty_ctx0 = start.get("sty_ctx", None)
+
+        start_core = {k: v for k, v in start.items() if k in rssm_keys}
+        start_feat = self.add_semsty(start_core)
+
+        if sty_ctx0 is not None:
+            start_feat = {**start_feat, "sty_ctx": sty_ctx0}
+
+        outs, carry = policy(start_feat, carry)
+        start_feat = {**start_feat, "action": outs, "carry": carry}
 
         def step(prev, _):
-            prev = prev.copy()
-            carry = prev.pop("carry")
-            state = self.rssm.img_step(prev, prev.pop("action"))
+            carry = prev["carry"]
+            sty_ctx = prev.get("sty_ctx", None)
+            action = prev["action"]
+
+            prev_core = {k: prev[k] for k in rssm_keys}
+            state_core = self.rssm.img_step(prev_core, action)
+            state = self.add_semsty(state_core)
+
+            if sty_ctx is not None:
+                state = {**state, "sty_ctx": sty_ctx}
+
             outs, carry = policy(state, carry)
             return {**state, "action": outs, "carry": carry}
 
-        traj = jaxutils_teacher.scan(step, jnp.arange(horizon), start, self.config.imag_unroll)
-        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items() if k != "carry"}
+        traj = jaxutils_teacher.scan(step, jnp.arange(horizon), start_feat, self.config.imag_unroll)
+        traj = {k: jnp.concatenate([start_feat[k][None], v], 0) for k, v in traj.items() if k != "carry"}
+
         cont = self.heads["cont"](traj).mode()
         traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
+
         discount = 1 - 1 / self.config.horizon
         traj["weight"] = jnp.cumprod(discount * traj["cont"], 0) / discount
         return traj
@@ -608,17 +975,49 @@ class WorldModel(nj.Module):
         state = self.initial(len(data["is_first"]))
         report = {}
         report.update(self.loss(data, state)[-1][-1])
-        context, _ = self.rssm.observe(self.encoder(data)[:6, :5], data["action"][:6, :5], data["is_first"][:6, :5])
-        start = {k: v[:, -1] for k, v in context.items()}
+
+        # --- Encode once (avoid duplicate encoder calls) ---
+        embed = self.encoder(data)
+
+        # --- Build a per-sequence style context and repeat over time ---
+        # Safe to always compute; extra keys won't hurt heads that don't use it.
+        # sty_ctx0 = self.style_ctx_net({"tensor": embed[:, 0]})               # (B, C)
+        # K = 5  # first 5 timesteps
+        # sty_in = jnp.mean(embed[:, :K], axis=1)        # (B,C)
+        # sty_ctx0 = self.style_ctx_net({"tensor": sty_in})
+        # sty_ctx  = jnp.repeat(sty_ctx0[:, None, :], embed.shape[1], axis=1)  # (B, T, C)
+
+        sty_ctx = self._compute_sty_ctx(embed, data["is_first"])  # (B, T, C)
+
+
+        # --- Reconstruct first few steps ---
+        context, _ = self.rssm.observe(
+            embed[:6, :5],
+            data["action"][:6, :5],
+            data["is_first"][:6, :5],
+        )
+        context = {**context, "sty_ctx": sty_ctx[:6, :5]}  # <-- REQUIRED if decoder/cont expects sty_ctx
+
+        # Start state for open-loop imagination: RSSM core keys only
+        rssm_keys = set(self.rssm.initial(1).keys())
+        start = {k: v[:, -1] for k, v in context.items() if k in rssm_keys}
+
+        # --- Open-loop prediction for remaining steps ---
+        openl_state = self.rssm.imagine(data["action"][:6, 5:], start)
+        openl_state = {**openl_state, "sty_ctx": sty_ctx[:6, 5:]}  # <-- REQUIRED
+
         recon = self.heads["decoder"](context)
-        openl = self.heads["decoder"](self.rssm.imagine(data["action"][:6, 5:], start))
+        openl = self.heads["decoder"](openl_state)
+
         for key in self.heads["decoder"].cnn_shapes.keys():
             truth = data[key][:6].astype(jnp.float32)
             model = jnp.concatenate([recon[key].mode()[:, :5], openl[key].mode()], 1)
             error = (model - truth + 1) / 2
             video = jnp.concatenate([truth, model, error], 2)
             report[f"openl_{key}"] = jaxutils_teacher.video_grid(video)
+
         return report
+
 
     def _metrics(self, data, dists, post, prior, losses, model_loss):
         entropy = lambda feat: self.rssm.get_dist(feat).entropy()
@@ -637,11 +1036,26 @@ class WorldModel(nj.Module):
         if "cont" in dists and not self.config.jax.debug_nans:
             stats = jaxutils_teacher.balance_stats(dists["cont"], data["cont"], 0.5)
             metrics.update({f"cont_{k}": v for k, v in stats.items()})
+        if "vlm" in data:
+            vlm = data["vlm"].astype(jnp.float32)
+            vlm_norm = jnp.linalg.norm(vlm, axis=-1)  # (B,T)
+            metrics["vlm_norm_mean"] = vlm_norm.mean()
+            metrics["vlm_norm_std"] = vlm_norm.std()
         return metrics
 
 
 class ImagActorCritic(nj.Module):
     def __init__(self, critics, scales, act_space, config):
+
+        def _parse_keys(x, default):
+            if x is None:
+                return list(default)
+            if isinstance(x, (list, tuple)):
+                return list(x)
+            if isinstance(x, str):
+                return [k.strip() for k in x.split(",") if k.strip()]
+            return list(default)
+
         critics = {k: v for k, v in critics.items() if scales[k]}
         for key, scale in scales.items():
             assert not scale or key in critics, key
@@ -651,22 +1065,19 @@ class ImagActorCritic(nj.Module):
         self.config = config
         disc = act_space.discrete
         self.grad = config.actor_grad_disc if disc else config.actor_grad_cont
-        # self.actor = nets_vlm.MLP(
-        #     name="actor",
-        #     dims="deter",
-        #     shape=act_space.shape,
-        #     **config.actor,
-        #     dist=config.actor_dist_disc if disc else config.actor_dist_cont,
-        # )
+
+        actor_inputs = _parse_keys(getattr(config, "actor_inputs", None), default=["sem"])
+        actor_dims = str(getattr(config, "actor_dims", actor_inputs[0]))
 
         actor_kw = dict(config.actor)
-        actor_kw["inputs"] = ["sem"]
+        actor_kw["inputs"] = actor_inputs
+
         self.actor = nets_vlm.MLP(
             name="actor",
-            dims="sem",
+            dims=actor_dims,
             shape=act_space.shape,
             **actor_kw,
-            dist=config.actor_dist_disc if disc else config.actor_dist_cont,
+            dist=config.actor_dist_disc if act_space.discrete else config.actor_dist_cont,
         )
 
         self.retnorms = {k: jaxutils_teacher.Moments(**config.retnorm, name=f"retnorm_{k}") for k in critics}
@@ -745,14 +1156,33 @@ class ImagActorCritic(nj.Module):
 
 class VFunction(nj.Module):
     def __init__(self, rewfn, config):
+
+        def _parse_keys(x, default):
+            if x is None:
+                return list(default)
+            if isinstance(x, (list, tuple)):
+                return list(x)
+            if isinstance(x, str):
+                return [k.strip() for k in x.split(",") if k.strip()]
+            return list(default)
+
         self.rewfn = rewfn
         self.config = config
         # self.net = nets_vlm.MLP((), name="net", dims="deter", **self.config.critic)
         # self.slow = nets_vlm.MLP((), name="slow", dims="deter", **self.config.critic)
+        # critic_kw = dict(self.config.critic)
+        # critic_kw["inputs"] = ["sem"]
+        # self.net = nets_vlm.MLP((), name="net", dims="sem", **critic_kw)
+        # self.slow = nets_vlm.MLP((), name="slow", dims="sem", **critic_kw)
+        
+        critic_inputs = _parse_keys(getattr(config, "critic_inputs", None), default=["sem"])
+        critic_dims = str(getattr(config, "critic_dims", critic_inputs[0]))
+
         critic_kw = dict(self.config.critic)
-        critic_kw["inputs"] = ["sem"]
-        self.net = nets_vlm.MLP((), name="net", dims="sem", **critic_kw)
-        self.slow = nets_vlm.MLP((), name="slow", dims="sem", **critic_kw)
+        critic_kw["inputs"] = critic_inputs
+
+        self.net = nets_vlm.MLP((), name="net", dims=critic_dims, **critic_kw)
+        self.slow = nets_vlm.MLP((), name="slow", dims=critic_dims, **critic_kw)
 
         self.updater = jaxutils_teacher.SlowUpdater(
             self.net,
